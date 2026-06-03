@@ -254,7 +254,7 @@ export default function TaskTable({ onOpenTask, rows: externalRows }) {
 
         <div className="tt-card" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
           <div className="tt-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-            <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: "max-content", minWidth: "100%" }}>
+            <table style={{ borderCollapse: "collapse", tableLayout: "fixed", width: COLS.reduce((s, c) => s + widths[c.key], 0) }}>
               <colgroup>
                 {COLS.map((c) => <col key={c.key} style={{ width: widths[c.key] }} />)}
               </colgroup>
