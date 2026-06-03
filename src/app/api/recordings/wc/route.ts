@@ -22,8 +22,16 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: 'Invalid URL' }, { status: 400 })
   }
 
-  // WC recording URLs require web session auth, not API auth.
-  // Return the play URL for the user to open directly in WhatConverts.
-  const playUrl = wcUrl.replace('/download', '/play')
-  return Response.json({ url: playUrl, type: 'external' })
+  const wcToken = process.env.WC_API_TOKEN
+  if (!wcToken) {
+    return Response.json({ error: 'WC credentials not configured' }, { status: 500 })
+  }
+
+  // WC recording download works with ?token={api_token} query parameter
+  // Return the authenticated URL for the browser to fetch directly
+  const downloadUrl = wcUrl.includes('/download')
+    ? `${wcUrl}?token=${wcToken}`
+    : `${wcUrl.replace(/\/play$/, '/download')}?token=${wcToken}`
+
+  return Response.json({ url: downloadUrl })
 }

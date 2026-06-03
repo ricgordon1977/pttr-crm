@@ -140,7 +140,6 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
   const [interactionDetail, setInteractionDetail] = useState<InteractionDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
-  const [recordingType, setRecordingType] = useState<'audio' | 'external'>('audio')
   const [recordingLoading, setRecordingLoading] = useState(false)
   const [recordingError, setRecordingError] = useState(false)
 
@@ -188,7 +187,7 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
     fetchJobHistory()
   }, [lead, open])
 
-  // Fetch recording: GCS signed URL for inline playback, WC link as fallback
+  // Fetch recording: WC proxy first (100% coverage), GCS signed URL fallback
   useEffect(() => {
     const gcsUri = interactionDetail?.recording_url
     const wcUrl = interactionDetail?.wc_recording_url
@@ -196,25 +195,28 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
     let cancelled = false
     setRecordingLoading(true)
     setRecordingError(false)
-    setRecordingType('audio')
-
     async function fetchRecording() {
-      // Try GCS signed URL first (8x8 — direct audio playback)
+      // Try WC recording first (100% coverage, returns token-authenticated URL)
+      if (wcUrl) {
+        try {
+          const res = await authFetch(`/api/recordings/wc?url=${encodeURIComponent(wcUrl)}`)
+          if (res.ok) {
+            const data = await res.json()
+            if (!cancelled) setRecordingUrl(data.url)
+            return
+          }
+        } catch { /* fall through to GCS */ }
+      }
+      // Fallback: GCS signed URL (8x8 recordings)
       if (gcsUri) {
         try {
           const res = await authFetch(`/api/recordings?uri=${encodeURIComponent(gcsUri)}`)
           if (res.ok) {
             const data = await res.json()
-            if (!cancelled) { setRecordingUrl(data.url); setRecordingType('audio') }
+            if (!cancelled) setRecordingUrl(data.url)
             return
           }
-        } catch { /* fall through to WC */ }
-      }
-      // Fallback: WC recording (external link — requires WC login to play)
-      if (wcUrl) {
-        const playUrl = wcUrl.replace('/download', '/play')
-        if (!cancelled) { setRecordingUrl(playUrl); setRecordingType('external') }
-        return
+        } catch { /* fall through */ }
       }
       if (!cancelled) setRecordingError(true)
     }
@@ -326,15 +328,8 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                   {recordingError && (
                     <p className="text-[13px] text-muted-foreground">Recording unavailable.</p>
                   )}
-                  {recordingUrl && recordingType === 'audio' && (
+                  {recordingUrl && (
                     <audio controls className="w-full h-8" src={recordingUrl} preload="none" />
-                  )}
-                  {recordingUrl && recordingType === 'external' && (
-                    <a href={recordingUrl} target="_blank" rel="noopener noreferrer"
-                       className="inline-flex items-center gap-1 text-[13px] text-blue-600 hover:text-blue-800"
-                    >
-                      Play recording on WhatConverts ↗
-                    </a>
                   )}
                   <Separator />
                   <div className="text-[13px] whitespace-pre-wrap font-mono bg-muted/40 rounded p-4 overflow-y-auto leading-relaxed" style={{ maxHeight: 'calc(100vh - 220px)' }}>
