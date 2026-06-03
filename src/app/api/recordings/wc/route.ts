@@ -22,43 +22,8 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: 'Invalid URL' }, { status: 400 })
   }
 
-  // Fetch the recording using WC API credentials
-  // WC recording download URLs work with basic auth (same as leads API)
-  const wcToken = process.env.WC_API_TOKEN
-  const wcSecret = process.env.WC_API_SECRET
-
-  if (!wcToken || !wcSecret) {
-    return Response.json({ error: 'WC credentials not configured' }, { status: 500 })
-  }
-
-  try {
-    const authHeader = 'Basic ' + Buffer.from(`${wcToken}:${wcSecret}`).toString('base64')
-    const res = await fetch(wcUrl, {
-      headers: { 'Authorization': authHeader },
-      redirect: 'follow',
-    })
-
-    if (!res.ok) {
-      return Response.json({ error: 'Failed to fetch recording' }, { status: res.status })
-    }
-
-    // Check if we got audio back or a redirect URL
-    const contentType = res.headers.get('content-type') || ''
-
-    if (contentType.includes('audio') || contentType.includes('octet-stream')) {
-      // Stream the audio directly
-      return new Response(res.body, {
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'private, max-age=900',
-        },
-      })
-    }
-
-    // If WC returned a redirect to a direct audio URL, pass it back
-    return Response.json({ url: res.url })
-  } catch (error) {
-    console.error('WC recording proxy error:', error)
-    return Response.json({ error: 'Failed to proxy recording' }, { status: 500 })
-  }
+  // WC recording URLs require web session auth, not API auth.
+  // Return the play URL for the user to open directly in WhatConverts.
+  const playUrl = wcUrl.replace('/download', '/play')
+  return Response.json({ url: playUrl, type: 'external' })
 }
