@@ -122,6 +122,14 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       accessorKey: 'lead_id',
       header: 'Lead ID',
       enableColumnFilter: false,
+      cell: ({ row }) => (
+        <span className="flex items-center gap-1">
+          {row.original.lead_id}
+          {row.original.is_existing_client && (
+            <span className="inline-block w-2 h-2 rounded-full bg-amber-500" title="Existing client" />
+          )}
+        </span>
+      ),
     },
     {
       accessorKey: 'channel',
@@ -135,7 +143,19 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
     },
     { accessorKey: 'contact_name', header: 'Contact' },
     { accessorKey: 'phone_norm', header: 'Phone', cell: ({ row }) => formatPhone(row.original.phone_norm) },
+    { accessorKey: 'email', header: 'Email', cell: ({ row }) => row.original.email ? <span className="text-muted-foreground">{row.original.email}</span> : '—' },
+    {
+      accessorKey: 'business_hours_flag',
+      header: 'AH',
+      enableColumnFilter: false,
+      cell: ({ row }) => row.original.business_hours_flag === 'After Hours' ? <AfterHoursBadge /> : '',
+    },
     { accessorKey: 'suburb', header: 'Suburb', cell: ({ row }) => row.original.suburb ?? '—' },
+    {
+      accessorKey: 'operator',
+      header: 'Operator',
+      cell: ({ row }) => row.original.operator || '—',
+    },
     {
       accessorKey: 'lead_source',
       header: 'Source',
@@ -151,18 +171,12 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       header: 'Funnel Stage',
       cell: ({ row }) => row.original.funnel_stage ? <FunnelStageBadge stage={row.original.funnel_stage} /> : '—',
     },
-    {
-      accessorKey: 'business_hours_flag',
-      header: 'AH',
-      enableColumnFilter: false,
-      cell: ({ row }) => row.original.business_hours_flag === 'After Hours' ? <AfterHoursBadge /> : '',
-    },
     { accessorKey: 'dnp_reason', header: 'Sub-Status', cell: ({ row }) => row.original.dnp_reason ?? '—' },
     {
-      accessorKey: 'sales_value',
+      accessorKey: 'job_value',
       header: 'Value',
       enableColumnFilter: false,
-      cell: ({ row }) => formatCurrency(row.original.sales_value),
+      cell: ({ row }) => formatCurrency(row.original.job_value),
     },
   ]
 

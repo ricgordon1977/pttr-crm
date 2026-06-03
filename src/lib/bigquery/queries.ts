@@ -37,10 +37,63 @@ export async function getContactTimeline(contactId: string) {
 // ─── LEADS ───────────────────────────────────────────────────────────────────
 export async function getLeads(limit = 500) {
   return query(`
-    SELECT * FROM \`${DS}.vw_leads\`
-    WHERE funnel_stage != 'Repeat'
-    ORDER BY lead_date DESC
-    LIMIT @limit
+    WITH leads AS (
+      SELECT * FROM \`${DS}.vw_leads\`
+      WHERE funnel_stage != 'Repeat'
+      ORDER BY lead_date DESC
+      LIMIT @limit
+    ),
+    -- First interaction operator per lead
+    lead_operators AS (
+      SELECT li.lead_id,
+        FIRST_VALUE(
+          COALESCE(agent.callee_name, NULLIF(TRIM(li.operator_name), ''), rc.callee_name)
+        ) OVER (PARTITION BY li.lead_id ORDER BY li.contact_datetime ASC) AS first_operator,
+        ROW_NUMBER() OVER (PARTITION BY li.lead_id ORDER BY li.contact_datetime ASC) AS rn
+      FROM \`${DS}.lead_interactions\` li
+      LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
+      LEFT JOIN (
+        SELECT parent_call_id, callee_name,
+               ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY talk_time_ms DESC) AS lrn
+        FROM \`${DS}.raw_call_legs\`
+        WHERE answered = 'Answered' AND direction = 'Internal'
+          AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
+      ) agent ON rc.call_id = agent.parent_call_id AND agent.lrn = 1
+      WHERE li.contact_type = 'Phone'
+    ),
+    -- Existing client: has jobs BEFORE the lead date
+    existing_clients AS (
+      SELECT DISTINCT vl.lead_id
+      FROM leads vl
+      JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
+        ON (RIGHT(REGEXP_REPLACE(tc.norm_client_mobile, r'[^0-9]', ''), 9) = RIGHT(REGEXP_REPLACE(vl.phone_norm, r'[^0-9]', ''), 9) AND LENGTH(vl.phone_norm) >= 9)
+        OR (LOWER(tc.norm_client_email) = LOWER(vl.email) AND vl.email IS NOT NULL AND vl.email != '')
+        OR (LOWER(tc.id_email) = LOWER(vl.email) AND vl.email IS NOT NULL AND vl.email != '')
+      WHERE SAFE.PARSE_DATE('%Y/%m/%d', tc.requested_date) < vl.lead_date
+        OR tc.requested_date_parsed < vl.lead_date
+    ),
+    -- Job value: invoiced amount from jobs within 30 days after lead
+    job_values AS (
+      SELECT vl.lead_id,
+        MAX(tc.task_invoices_total_ex) AS job_invoice_value
+      FROM leads vl
+      JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
+        ON (RIGHT(REGEXP_REPLACE(tc.norm_client_mobile, r'[^0-9]', ''), 9) = RIGHT(REGEXP_REPLACE(vl.phone_norm, r'[^0-9]', ''), 9) AND LENGTH(vl.phone_norm) >= 9)
+        OR (LOWER(tc.norm_client_email) = LOWER(vl.email) AND vl.email IS NOT NULL AND vl.email != '')
+        OR (LOWER(tc.id_email) = LOWER(vl.email) AND vl.email IS NOT NULL AND vl.email != '')
+      WHERE (SAFE.PARSE_DATE('%Y/%m/%d', tc.requested_date) BETWEEN vl.lead_date AND DATE_ADD(vl.lead_date, INTERVAL 30 DAY))
+         OR (tc.requested_date_parsed BETWEEN vl.lead_date AND DATE_ADD(vl.lead_date, INTERVAL 30 DAY))
+      GROUP BY vl.lead_id
+    )
+    SELECT l.*,
+      lo.first_operator AS operator,
+      ec.lead_id IS NOT NULL AS is_existing_client,
+      COALESCE(jv.job_invoice_value, l.sales_value) AS job_value
+    FROM leads l
+    LEFT JOIN lead_operators lo ON l.lead_id = lo.lead_id AND lo.rn = 1
+    LEFT JOIN existing_clients ec ON l.lead_id = ec.lead_id
+    LEFT JOIN job_values jv ON l.lead_id = jv.lead_id
+    ORDER BY l.lead_date DESC
   `, { limit })
 }
 

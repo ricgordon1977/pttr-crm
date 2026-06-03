@@ -75,6 +75,9 @@ export interface Lead {
   email_count: number
   has_jobs: boolean
   notes: string
+  operator: string | null
+  is_existing_client: boolean
+  job_value: number | null
 }
 
 export interface LeadInteraction {
