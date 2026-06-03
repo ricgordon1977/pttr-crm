@@ -102,10 +102,13 @@ export interface JobHistory {
   primary_work_type: string | null
   display_status: string
   task_invoices_total_ex: number | null
+  quote_totalex: number | null
   client_name: string
   job_source: 'completed' | 'active'
   job_address: string | null
   job_suburb: string | null
+  description: string | null
+  task_notes: string | null
 }
 
 export interface Location {

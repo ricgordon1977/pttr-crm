@@ -120,7 +120,22 @@ export async function getCallDetail(leadId: number, dt: string) {
         agent.callee_name,
         li.operator_name,
         rc.callee_name,
-        CASE WHEN li.contact_subject LIKE 'Afterhours%' THEN 'Afterhours Service' END
+        CASE WHEN (
+          -- After hours: before 7am or after 4:30pm weekdays, or weekends
+          EXTRACT(DAYOFWEEK FROM CAST(li.contact_datetime_sydney AS DATETIME)) IN (1, 7)
+          OR EXTRACT(HOUR FROM CAST(li.contact_datetime_sydney AS DATETIME)) < 7
+          OR (EXTRACT(HOUR FROM CAST(li.contact_datetime_sydney AS DATETIME)) = 16
+              AND EXTRACT(MINUTE FROM CAST(li.contact_datetime_sydney AS DATETIME)) >= 30)
+          OR EXTRACT(HOUR FROM CAST(li.contact_datetime_sydney AS DATETIME)) >= 17
+          -- NSW public holidays (2026)
+          OR DATE(CAST(li.contact_datetime_sydney AS DATETIME)) IN (
+            '2026-01-01', '2026-01-26', '2026-01-27',
+            '2026-04-03', '2026-04-04', '2026-04-06',
+            '2026-04-25', '2026-06-08', '2026-08-03',
+            '2026-10-05', '2026-12-25', '2026-12-26',
+            '2026-12-28'
+          )
+        ) THEN 'Afterhours Service' END
       ) AS operator,
       li.operator_name,
       rc.talk_time AS duration_seconds,
@@ -196,7 +211,9 @@ export async function getJobHistory(phoneNorm: string, email: string) {
     completed_jobs AS (
       SELECT tc.jobnumber, tc.requested_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
              COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
-             COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\s*(.+)$')) AS job_suburb
+             COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\s*(.+)$')) AS job_suburb,
+             td.description,
+             SAFE_CAST(td.quote_totalex AS NUMERIC) AS quote_totalex
       FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
       LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
       WHERE (tc.norm_client_phone = @phoneNorm AND @phoneNorm != '')
@@ -212,7 +229,9 @@ export async function getJobHistory(phoneNorm: string, email: string) {
              td.status AS display_status, SAFE_CAST(td.quote_totalex AS NUMERIC) AS task_invoices_total_ex,
              td.client_clientname AS client_name, 'active' AS job_source,
              COALESCE(NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
-             COALESCE(NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\s*(.+)$')) AS job_suburb
+             COALESCE(NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\s*(.+)$')) AS job_suburb,
+             td.description,
+             SAFE_CAST(td.quote_totalex AS NUMERIC) AS quote_totalex
       FROM \`pttr-taskdata.ds_aroflo.tasks_deduped\` td
       JOIN matched_clients mc ON td.client_clientid = mc.clientid
       WHERE td.jobnumber NOT IN (SELECT jobnumber FROM completed_jobs)
@@ -222,9 +241,16 @@ export async function getJobHistory(phoneNorm: string, email: string) {
       UNION ALL
       SELECT * FROM active_jobs
     )
-    SELECT aj.*, cf.primary_work_type
+    task_notes_agg AS (
+      SELECT jobnumber,
+             STRING_AGG(CONCAT(COALESCE(dateposted, ''), ' — ', COALESCE(username, ''), ': ', COALESCE(note_clean, '')), '\n' ORDER BY dateposted DESC) AS task_notes
+      FROM \`pttr-taskdata.ds_aroflo.task_notes_deduped\`
+      GROUP BY jobnumber
+    )
+    SELECT aj.*, cf.primary_work_type, tn.task_notes
     FROM all_jobs aj
     LEFT JOIN \`pttr-taskdata.ds_aroflo.task_customfields_deduped\` cf ON aj.jobnumber = cf.jobnumber
+    LEFT JOIN task_notes_agg tn ON aj.jobnumber = tn.jobnumber
     ORDER BY aj.requested_date DESC
     LIMIT 50
   `, { phoneNorm: phoneNorm || '', phoneLast9, email: email || '' })

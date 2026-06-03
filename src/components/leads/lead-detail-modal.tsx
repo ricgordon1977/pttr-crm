@@ -81,6 +81,23 @@ function InteractionIcon({ type }: { type: string }) {
   return <FileText className="h-4 w-4 text-muted-foreground" />
 }
 
+function stripHtml(html: string | null | undefined): string {
+  if (!html) return ''
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 function hasDnp(reason: string | null | undefined): boolean {
   if (!reason) return false
   const r = reason.trim().toLowerCase()
@@ -383,43 +400,62 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
               </div>
 
               {/* Converted job bar — derived from job history, closest job within 30 days of lead */}
-              {convertedJob && (
-                <div className={`px-5 py-2.5 border-b flex items-center gap-2 text-[13px] ${convertedJob.job_source === 'active' ? 'bg-blue-50' : 'bg-green-50'}`}>
-                  <span className={`font-semibold ${convertedJob.job_source === 'active' ? 'text-blue-800' : 'text-green-800'}`}>
-                    Job #{convertedJob.jobnumber}
-                  </span>
-                  <span className={convertedJob.job_source === 'active' ? 'text-blue-400' : 'text-green-400'}>&middot;</span>
-                  {(convertedJob.primary_work_type || convertedJob.task_type) && (
-                    <>
-                      <span className={convertedJob.job_source === 'active' ? 'text-blue-700' : 'text-green-700'}>
-                        {convertedJob.primary_work_type || convertedJob.task_type}
-                      </span>
-                      <span className={convertedJob.job_source === 'active' ? 'text-blue-400' : 'text-green-400'}>&middot;</span>
-                    </>
-                  )}
-                  <Badge variant="secondary" className={`font-medium text-xs ${convertedJob.job_source === 'active' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>
-                    {convertedJob.display_status}
-                  </Badge>
-                  {(convertedJob.job_address || convertedJob.job_suburb) && (
-                    <>
-                      <span className={convertedJob.job_source === 'active' ? 'text-blue-400' : 'text-green-400'}>&middot;</span>
-                      <span className={convertedJob.job_source === 'active' ? 'text-blue-700' : 'text-green-700'}>
-                        {convertedJob.job_address && convertedJob.job_suburb && convertedJob.job_address.includes(convertedJob.job_suburb)
-                          ? convertedJob.job_address
-                          : [convertedJob.job_address, convertedJob.job_suburb].filter(Boolean).join(', ')}
-                      </span>
-                    </>
-                  )}
-                  {convertedJob.task_invoices_total_ex != null && convertedJob.task_invoices_total_ex > 0 && (
-                    <>
-                      <span className={convertedJob.job_source === 'active' ? 'text-blue-400' : 'text-green-400'}>&middot;</span>
-                      <span className={`font-semibold ${convertedJob.job_source === 'active' ? 'text-blue-800' : 'text-green-800'}`}>
-                        {formatCurrency(convertedJob.task_invoices_total_ex)}
-                      </span>
-                    </>
-                  )}
-                </div>
-              )}
+              {convertedJob && (() => {
+                const isActive = convertedJob.job_source === 'active'
+                const bg = isActive ? 'bg-blue-50' : 'bg-green-50'
+                const text = isActive ? 'text-blue-800' : 'text-green-800'
+                const textLight = isActive ? 'text-blue-700' : 'text-green-700'
+                const dot = isActive ? 'text-blue-400' : 'text-green-400'
+                const badgeCls = isActive ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'
+                const desc = stripHtml(convertedJob.description)
+                const hasDetail = !!(desc || convertedJob.task_notes)
+                const valueDisplay = convertedJob.task_invoices_total_ex && convertedJob.task_invoices_total_ex > 0
+                  ? formatCurrency(convertedJob.task_invoices_total_ex)
+                  : convertedJob.quote_totalex && convertedJob.quote_totalex > 0
+                    ? `Quote: ${formatCurrency(convertedJob.quote_totalex)}`
+                    : null
+
+                return (
+                  <div className={`border-b ${bg}`}>
+                    <div className="px-5 py-2.5 flex items-center gap-2 text-[13px]">
+                      <span className={`font-semibold ${text}`}>Job #{convertedJob.jobnumber}</span>
+                      <span className={dot}>&middot;</span>
+                      {(convertedJob.primary_work_type || convertedJob.task_type) && (
+                        <><span className={textLight}>{convertedJob.primary_work_type || convertedJob.task_type}</span><span className={dot}>&middot;</span></>
+                      )}
+                      <Badge variant="secondary" className={`font-medium text-xs ${badgeCls}`}>{convertedJob.display_status}</Badge>
+                      {(convertedJob.job_address || convertedJob.job_suburb) && (
+                        <>
+                          <span className={dot}>&middot;</span>
+                          <span className={textLight}>
+                            {convertedJob.job_address && convertedJob.job_suburb && convertedJob.job_address.includes(convertedJob.job_suburb)
+                              ? convertedJob.job_address
+                              : [convertedJob.job_address, convertedJob.job_suburb].filter(Boolean).join(', ')}
+                          </span>
+                        </>
+                      )}
+                      {valueDisplay && (
+                        <><span className={dot}>&middot;</span><span className={`font-semibold ${text}`}>{valueDisplay}</span></>
+                      )}
+                    </div>
+                    {hasDetail && (
+                      <div className="px-5 pb-3 space-y-2">
+                        {desc && (
+                          <p className="text-[12px] text-muted-foreground whitespace-pre-wrap leading-relaxed">{desc}</p>
+                        )}
+                        {convertedJob.task_notes && (
+                          <div className="text-[12px] space-y-1">
+                            <span className="font-semibold text-muted-foreground">Notes:</span>
+                            <div className="whitespace-pre-wrap text-muted-foreground leading-relaxed pl-2 border-l-2 border-muted">
+                              {convertedJob.task_notes}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
 
               {/* DNP / Sub-Status */}
               {hasDnp(lead.dnp_reason) && (
@@ -520,7 +556,7 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                         <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Job #</th>
                         <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Type</th>
                         <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Status</th>
-                        <th className="text-right font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5">Invoiced</th>
+                        <th className="text-right font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5">Value</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -541,7 +577,11 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                               : (job.display_status || '—')}
                           </td>
                           <td className="py-1.5 text-right border-t border-muted/60">
-                            {job.task_invoices_total_ex ? formatCurrency(job.task_invoices_total_ex) : '—'}
+                            {job.task_invoices_total_ex && job.task_invoices_total_ex > 0
+                              ? formatCurrency(job.task_invoices_total_ex)
+                              : job.quote_totalex && job.quote_totalex > 0
+                                ? <span className="text-muted-foreground">Q: {formatCurrency(job.quote_totalex)}</span>
+                                : '—'}
                           </td>
                         </tr>
                       ))}
