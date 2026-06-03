@@ -43,17 +43,17 @@ export async function getLeads(limit = 500) {
       ORDER BY lead_date DESC
       LIMIT @limit
     ),
-    -- First interaction operator per lead
-    -- Only show real person names: "Firstname Lastname" pattern, excluding known queue/system names
+    -- First interaction operator per lead (single name, longest duration)
     lead_operators AS (
       SELECT li.lead_id,
         FIRST_VALUE(
           COALESCE(
             agent.callee_name,
-            CASE WHEN REGEXP_CONTAINS(COALESCE(li.operator_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+')
+            CASE WHEN REGEXP_CONTAINS(COALESCE(li.operator_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+                  AND li.operator_name NOT LIKE '%->%'
                   AND li.operator_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
                  THEN li.operator_name END,
-            CASE WHEN REGEXP_CONTAINS(COALESCE(rc.callee_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+')
+            CASE WHEN REGEXP_CONTAINS(COALESCE(rc.callee_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+$')
                   AND rc.callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
                  THEN rc.callee_name END
           )
@@ -63,11 +63,15 @@ export async function getLeads(limit = 500) {
       LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
       LEFT JOIN (
         SELECT parent_call_id, callee_name,
-               ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY talk_time_ms DESC) AS lrn
+               ROW_NUMBER() OVER (
+                 PARTITION BY parent_call_id
+                 ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC
+               ) AS lrn
         FROM \`${DS}.raw_call_legs\`
         WHERE answered = 'Answered' AND direction = 'Internal'
+          AND parent_call_id IS NOT NULL
           AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
-          AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+')
+          AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
           AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
       ) agent ON rc.call_id = agent.parent_call_id AND agent.lrn = 1
       WHERE li.contact_type = 'Phone'
@@ -144,7 +148,7 @@ export async function getCallDetail(leadId: number, dt: string) {
       li.lead_id,
       li.contact_datetime_sydney AS call_datetime,
       rc.norm_caller_phone AS caller_phone,
-      COALESCE(agent.callee_name, li.operator_name, rc.callee_name) AS operator,
+      COALESCE(agent.callee_name, CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name END, rc.callee_name) AS operator,
       li.operator_name,
       rc.talk_time AS duration_seconds,
       COALESCE(ct.full_transcript, li.contact_content) AS full_transcript,
@@ -157,14 +161,17 @@ export async function getCallDetail(leadId: number, dt: string) {
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
     LEFT JOIN (
-      SELECT parent_call_id, callee_name, talk_time_ms,
-             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY talk_time_ms DESC) AS rn
+      SELECT parent_call_id, callee_name,
+             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
       FROM \`${DS}.raw_call_legs\`
       WHERE answered = 'Answered'
         AND direction = 'Internal'
+        AND parent_call_id IS NOT NULL
         AND callee NOT LIKE 'CallForking%'
         AND callee NOT LIKE 'RingGroup%'
         AND callee NOT LIKE 'AutoAttendant%'
+        AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+        AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
     ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
     WHERE li.lead_id = @leadId
       AND li.contact_type = 'Phone'
@@ -187,7 +194,7 @@ export async function getCallDetail(leadId: number, dt: string) {
       rc.norm_caller_phone AS caller_phone,
       COALESCE(
         agent.callee_name,
-        li.operator_name,
+        CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name END,
         rc.callee_name,
         CASE WHEN (
           -- After hours: before 7am or after 4:30pm weekdays, or weekends
@@ -222,14 +229,17 @@ export async function getCallDetail(leadId: number, dt: string) {
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
     LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
     LEFT JOIN (
-      SELECT parent_call_id, callee_name, talk_time_ms,
-             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY talk_time_ms DESC) AS rn
+      SELECT parent_call_id, callee_name,
+             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
       FROM \`${DS}.raw_call_legs\`
       WHERE answered = 'Answered'
         AND direction = 'Internal'
+        AND parent_call_id IS NOT NULL
         AND callee NOT LIKE 'CallForking%'
         AND callee NOT LIKE 'RingGroup%'
         AND callee NOT LIKE 'AutoAttendant%'
+        AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+        AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
     ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
     WHERE li.lead_id = @leadId
       AND li.contact_type = 'Phone'
