@@ -114,10 +114,10 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       enableColumnFilter: false,
       cell: ({ row }) => (
         <span className="flex items-center gap-1">
-          {row.original.lead_id}
           {row.original.is_existing_client && (
             <span title="Existing client"><CheckCircle className="inline-block h-3.5 w-3.5 text-green-600" /></span>
           )}
+          {row.original.lead_id}
         </span>
       ),
     },
