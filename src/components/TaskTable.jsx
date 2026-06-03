@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import {
   Search, Clock, CheckCircle2, XCircle, Archive, FileSignature,
-  ChevronRight, Zap, ArrowUpDown, Eye,
+  ChevronRight, Zap, ArrowUpDown,
 } from "lucide-react";
 
 const ROWS = [
@@ -38,7 +38,7 @@ const money = (n) => "$" + n.toLocaleString("en-AU", { minimumFractionDigits: 2,
 
 /* Column keys, default widths, header labels, and frozen count */
 const COLS = [
-  { key: "view",   w: 56,  label: "",              frozen: true },
+  { key: "view",   w: 64,  label: "",              frozen: true },
   { key: "jn",     w: 104, label: "JN",            frozen: true },
   { key: "addr",   w: 230, label: "Address",       frozen: true },
   { key: "client", w: 168, label: "Client",        frozen: true, edge: true },
@@ -108,14 +108,15 @@ const css = `
 .tt-td { padding:12px 14px; font-size:13px; border-top:1px solid var(--line2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .tt-tr { cursor:pointer; }
 .tt-tr:hover td { background:var(--hover); }
-.tt-tr:hover .tt-view { background:var(--navy); color:#fff; border-color:var(--navy); }
+.tt-tr:hover .tt-view-pill { background:var(--line2); }
 .tt-sticky { position:sticky; z-index:2; background:var(--surface); }
 .tt-th.tt-sticky { z-index:6; background:var(--line2); }
 .tt-edge { box-shadow:6px 0 7px -5px rgba(0,0,0,.14); border-right:1px solid var(--line); }
 .tt-pill { display:inline-flex; align-items:center; gap:6px; font-weight:600; font-size:12px; padding:3px 9px; border-radius:999px; }
 .tt-grade { display:inline-grid; place-items:center; width:24px; height:24px; border-radius:7px; font-weight:700; font-size:12px; }
-.tt-view { display:inline-grid; place-items:center; width:30px; height:30px; color:var(--ink2);
-  background:var(--surface); border:1px solid var(--line); border-radius:8px; cursor:pointer; transition:.15s; }
+.tt-view-pill { display:inline-block; font-size:12px; font-weight:500; color:var(--ink2);
+  background:var(--surface); border:1px solid var(--line); border-radius:999px; padding:2px 12px;
+  cursor:pointer; transition:.15s; white-space:nowrap; }
 .tt-link { color:var(--navy); text-decoration:none; }
 .tt-link:hover { text-decoration:underline; }
 .tt-filter { font-family:inherit; font-size:13px; font-weight:600; border:0; background:transparent; color:var(--ink2); padding:7px 13px; border-radius:8px; cursor:pointer; transition:.15s; }
@@ -283,7 +284,7 @@ export default function TaskTable({ onOpenTask, rows: externalRows }) {
                 {visible.map((r) => (
                   <tr key={r.id} className="tt-tr" onClick={() => open(r)}>
                     <td className={`tt-td ${stickyProps(0).className || ""}`} style={{ ...stickyProps(0).style, textAlign: "center" }}>
-                      <button className="tt-view" title="View task" onClick={(e) => { stop(e); open(r); }}><Eye size={15} /></button>
+                      <span className="tt-view-pill" onClick={(e) => { stop(e); open(r); }}>View</span>
                     </td>
                     <td className={`tt-td tt-mono ${stickyProps(1).className || ""}`} style={{ ...stickyProps(1).style, fontWeight: 500 }}>{r.jobNo}</td>
                     <td className={`tt-td ${stickyProps(2).className || ""}`} style={{ ...stickyProps(2).style, fontWeight: 600 }} title={r.address}>{r.address}</td>
