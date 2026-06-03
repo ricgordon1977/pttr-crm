@@ -97,7 +97,10 @@ export async function getLeads(limit = 500) {
       GROUP BY vl.lead_id
     )
     SELECT l.* EXCEPT(contact_name),
-      COALESCE(NULLIF(TRIM(l.contact_name), ''), INITCAP(NULLIF(TRIM(alc.caller_name), ''))) AS contact_name,
+      CASE
+        WHEN UPPER(TRIM(COALESCE(l.contact_name, alc.caller_name, ''))) IN ('AUSTRALIA', 'INTERNATIONAL', 'NEW ZEALAND', 'UNITED STATES', 'UNITED KINGDOM', '') THEN NULL
+        ELSE COALESCE(NULLIF(TRIM(l.contact_name), ''), INITCAP(NULLIF(TRIM(alc.caller_name), '')))
+      END AS contact_name,
       lo.first_operator AS operator,
       ec.lead_id IS NOT NULL AS is_existing_client,
       COALESCE(jv.job_invoice_value, l.sales_value) AS job_value
