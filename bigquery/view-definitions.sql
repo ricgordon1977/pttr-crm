@@ -1,5 +1,5 @@
 -- BigQuery View Definitions
--- Updated: 2026-06-04T12:42:29.931Z
+-- Updated: 2026-06-04T13:15:10.390Z
 
 -- View: ds_crm.vw_account_locations
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_account_locations` AS
@@ -982,7 +982,7 @@ FROM call_with_wc WHERE wc_rank = 1 OR wc_lead_id IS NULL;
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_opportunities` AS
 WITH
 real_calls AS (
-  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE duration_sec >= 10
+  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE duration_sec >= 20
 ),
 
 -- Match calls to AroFlo jobs (phone + time window)
