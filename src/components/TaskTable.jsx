@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import {
   Search, Clock, CheckCircle2, XCircle, Archive, FileSignature,
-  ChevronRight, Zap, ArrowUpDown,
+  ChevronRight, Zap, Droplets, ArrowUpDown,
 } from "lucide-react";
 
 const ROWS = [
@@ -38,23 +38,22 @@ const money = (n) => "$" + n.toLocaleString("en-AU", { minimumFractionDigits: 2,
 
 /* Column keys, default widths, header labels, and frozen count */
 const COLS = [
-  { key: "view",   w: 64,  label: "",              frozen: true },
-  { key: "jn",     w: 104, label: "JN",            frozen: true },
-  { key: "addr",   w: 230, label: "Address",       frozen: true },
-  { key: "client", w: 168, label: "Client",        frozen: true, edge: true },
-  { key: "phone",  w: 132, label: "Phone" },
-  { key: "email",  w: 210, label: "Email" },
-  { key: "type",   w: 128, label: "Type" },
-  { key: "grade",  w: 64,  label: "Grade" },
-  { key: "status", w: 118, label: "Status" },
-  { key: "tech",   w: 140, label: "Technician" },
-  { key: "logged", w: 104, label: "Logged" },
-  { key: "due",    w: 96,  label: "Due" },
-  { key: "value",  w: 124, label: "Value (ex GST)" },
+  { key: "view",      w: 56,  label: "",              frozen: true },
+  { key: "logged",    w: 86,  label: "Requested",     frozen: true },
+  { key: "jn",        w: 72,  label: "Job Number",    frozen: true },
+  { key: "status",    w: 108, label: "Status",        frozen: true },
+  { key: "type",      w: 96,  label: "Type",          frozen: true, edge: true },
+  { key: "client",    w: 170, label: "Client" },
+  { key: "addr",      w: 220, label: "Address" },
+  { key: "phone",     w: 120, label: "Phone" },
+  { key: "email",     w: 200, label: "Email" },
+  { key: "tech",      w: 130, label: "Technician" },
+  { key: "due",       w: 86,  label: "Due" },
+  { key: "completed", w: 86,  label: "Completed" },
 ];
-const FROZEN_COUNT = 4;
+const FROZEN_COUNT = 5;
 const MIN_COL_W = 48;
-const STORAGE_KEY = "taskTable.colWidths";
+const STORAGE_KEY = "taskTable.colWidths.v3";
 
 function defaultWidths() {
   const o = {};
@@ -130,6 +129,21 @@ const css = `
 .tt-reset-btn { font-family:inherit; font-size:11px; color:var(--ink3); background:none; border:none; cursor:pointer; padding:4px 8px; border-radius:6px; }
 .tt-reset-btn:hover { background:var(--line2); color:var(--ink2); }
 `;
+
+function TypeLabel({ type }) {
+  const t = (type || "").toLowerCase();
+  const isElec = t.includes("electr");
+  const isPlumb = t.includes("plumb");
+  const Icon = isElec ? Zap : isPlumb ? Droplets : Zap;
+  const color = isElec ? "var(--amber)" : isPlumb ? "#1D5BBF" : "var(--ink3)";
+  // Strip "Plumbing"/"Electrical", replace Acc' with Account
+  let label = (type || "").replace(/\s*(plumbing|electrical)\s*/gi, "").replace(/Acc'/g, "Account").trim();
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12.5, color: "var(--ink2)" }}>
+      <Icon size={12} style={{ color, flexShrink: 0 }} />{label}
+    </span>
+  );
+}
 
 function StatusPill({ s }) {
   const cfg = STATUS[s], tn = TONES[cfg.tone];
@@ -283,29 +297,36 @@ export default function TaskTable({ onOpenTask, rows: externalRows }) {
               <tbody>
                 {visible.map((r) => (
                   <tr key={r.id} className="tt-tr" onClick={() => open(r)}>
+                    {/* 0: view */}
                     <td className={`tt-td ${stickyProps(0).className || ""}`} style={{ ...stickyProps(0).style, textAlign: "center" }}>
                       <span className="tt-view-pill" onClick={(e) => { stop(e); open(r); }}>View</span>
                     </td>
-                    <td className={`tt-td tt-mono ${stickyProps(1).className || ""}`} style={{ ...stickyProps(1).style, fontWeight: 500 }}>{r.jobNo}</td>
-                    <td className={`tt-td ${stickyProps(2).className || ""}`} style={{ ...stickyProps(2).style, fontWeight: 600 }} title={r.address}>{r.address}</td>
-                    <td className={`tt-td ${stickyProps(3).className || ""}`} style={stickyProps(3).style} title={r.client}>{r.client}</td>
+                    {/* 1: requested */}
+                    <td className={`tt-td tt-mono ${stickyProps(1).className || ""}`} style={{ ...stickyProps(1).style, color: "var(--ink2)", fontSize: 12 }}>{r.logged}</td>
+                    {/* 2: job number */}
+                    <td className={`tt-td tt-mono ${stickyProps(2).className || ""}`} style={{ ...stickyProps(2).style, fontWeight: 500 }}>{r.jobNo}</td>
+                    {/* 3: status */}
+                    <td className={`tt-td ${stickyProps(3).className || ""}`} style={stickyProps(3).style}><StatusPill s={r.status} /></td>
+                    {/* 4: type */}
+                    <td className={`tt-td ${stickyProps(4).className || ""}`} style={stickyProps(4).style}><TypeLabel type={r.type} /></td>
+                    {/* client */}
+                    <td className="tt-td" style={{ fontWeight: 600 }} title={r.client}>{r.client}</td>
+                    {/* address */}
+                    <td className="tt-td" title={r.address}>{r.address}</td>
+                    {/* phone */}
                     <td className="tt-td tt-mono" style={{ color: "var(--ink2)" }}>
                       <a className="tt-link" href={`tel:${(r.phone || "").replace(/\s/g, "")}`} onClick={stop}>{r.phone}</a>
                     </td>
+                    {/* email */}
                     <td className="tt-td" style={{ color: "var(--ink2)" }} title={r.email}>
                       <a className="tt-link" href={`mailto:${r.email}`} onClick={stop}>{r.email}</a>
                     </td>
-                    <td className="tt-td">
-                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12.5, color: "var(--ink2)" }}>
-                        <Zap size={11} style={{ color: "var(--amber)" }} />{r.type}
-                      </span>
-                    </td>
-                    <td className="tt-td">{r.grade && GRADE[r.grade] ? <span className="tt-grade" style={{ background: GRADE[r.grade].bg, color: GRADE[r.grade].fg }}>{r.grade}</span> : "—"}</td>
-                    <td className="tt-td"><StatusPill s={r.status} /></td>
+                    {/* technician */}
                     <td className="tt-td" style={{ color: "var(--ink2)" }}>{r.tech}</td>
-                    <td className="tt-td tt-mono" style={{ color: "var(--ink2)" }}>{r.logged}</td>
-                    <td className="tt-td tt-mono" style={{ color: "var(--ink2)" }}>{r.due}</td>
-                    <td className="tt-td tt-mono" style={{ textAlign: "right", fontWeight: 600 }}>{r.value != null ? money(r.value) : "—"}</td>
+                    {/* due */}
+                    <td className="tt-td tt-mono" style={{ color: "var(--ink2)", fontSize: 12 }}>{r.due}</td>
+                    {/* completed */}
+                    <td className="tt-td tt-mono" style={{ color: "var(--ink2)", fontSize: 12 }}>{r.completed || "—"}</td>
                   </tr>
                 ))}
                 {visible.length === 0 && (

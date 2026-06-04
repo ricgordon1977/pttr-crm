@@ -150,7 +150,13 @@ export async function getCallDetail(leadId: number, dt: string) {
       rc.norm_caller_phone AS caller_phone,
       COALESCE(agent.callee_name, CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name END, rc.callee_name) AS operator,
       li.operator_name,
-      rc.talk_time AS duration_seconds,
+      CASE
+        WHEN rc.talk_time IS NOT NULL AND REGEXP_CONTAINS(rc.talk_time, r'^\d{2}:\d{2}:\d{2}$')
+        THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
+        ELSE NULL
+      END AS duration_seconds,
       COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
       COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_url,
       COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
@@ -215,7 +221,13 @@ export async function getCallDetail(leadId: number, dt: string) {
         ) THEN 'Afterhours Service' END
       ) AS operator,
       li.operator_name,
-      rc.talk_time AS duration_seconds,
+      CASE
+        WHEN rc.talk_time IS NOT NULL AND REGEXP_CONTAINS(rc.talk_time, r'^\d{2}:\d{2}:\d{2}$')
+        THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
+        ELSE NULL
+      END AS duration_seconds,
       COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
       COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_url,
       COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
@@ -335,6 +347,209 @@ export async function getJobHistory(phoneNorm: string, email: string) {
     ORDER BY aj.requested_date DESC
     LIMIT 50
   `, { phoneNorm: phoneNorm || '', phoneLast9, email: email || '' })
+}
+
+// ─── JOBS ───────────────────────────────────────────────────────────────────
+export async function getJobs(limit = 500) {
+  return query(`
+    SELECT job_id, job_no, ref_no, address, client_name, client_phone, client_email,
+           task_type, status, grade, assigned, salesperson,
+           logged_date, due_date, completed_date, last_updated, job_value
+    FROM \`${DS}.vw_tasks\`
+    WHERE status IN ('open', 'quote')
+       OR logged_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 12 MONTH)
+    ORDER BY logged_date DESC
+    LIMIT @limit
+  `, { limit })
+}
+
+export async function getJobDetail(jobId: string) {
+  return query(`
+    SELECT * FROM \`${DS}.vw_tasks\`
+    WHERE job_id = @jobId
+  `, { jobId })
+}
+
+export async function getJobLabour(jobId: string) {
+  return query(`
+    SELECT user_username, worktype, hours, cost, sell, workdate, note
+    FROM \`pttr-taskdata.ds_aroflo.tasklabours_raw\`
+    WHERE task_jobnumber = @jobId
+      AND (deleted IS NULL OR deleted != 'true')
+    ORDER BY workdate DESC
+  `, { jobId })
+}
+
+export async function getJobInteractions(jobId: string) {
+  return query(`
+    SELECT
+      COALESCE(li.call_id, CAST(li.contact_datetime AS STRING)) AS interaction_id,
+      li.lead_id,
+      CASE
+        WHEN li.contact_type = 'Phone' THEN 'call'
+        ELSE 'email'
+      END AS type,
+      li.direction,
+      li.contact_datetime_sydney AS datetime,
+      COALESCE(
+        agent.callee_name,
+        CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name END,
+        ro.operators
+      ) AS operator,
+      CASE
+        WHEN li.contact_type = 'Phone' AND rc.talk_time IS NOT NULL
+          AND REGEXP_CONTAINS(rc.talk_time, r'^\\d{2}:\\d{2}:\\d{2}$')
+        THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
+        ELSE NULL
+      END AS duration,
+      CASE
+        WHEN li.contact_type = 'Phone' THEN LEFT(COALESCE(li.contact_content, ''), 120)
+        ELSE LEFT(COALESCE(li.contact_subject, li.contact_content, ''), 120)
+      END AS summary
+    FROM \`${DS}.unified_leads\` ul
+    JOIN \`${DS}.lead_interactions\` li ON ul.lead_id = li.lead_id
+    LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id AND li.contact_type = 'Phone'
+    LEFT JOIN (
+      SELECT parent_call_id, callee_name,
+             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
+      FROM \`${DS}.raw_call_legs\`
+      WHERE answered = 'Answered' AND direction = 'Internal'
+        AND parent_call_id IS NOT NULL
+        AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
+        AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+        AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
+    ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
+    LEFT JOIN (
+      SELECT call_id, STRING_AGG(DISTINCT operator_name, ', ' ORDER BY operator_name) AS operators
+      FROM \`${DS}.raw_recordings\`
+      WHERE operator_name IS NOT NULL AND operator_name != ''
+      GROUP BY call_id
+    ) ro ON li.call_id = ro.call_id AND li.contact_type = 'Phone'
+    WHERE REGEXP_CONTAINS(CONCAT(',', REPLACE(ul.job_numbers, ' ', ''), ','), CONCAT(',', @jobId, ','))
+    ORDER BY li.contact_datetime_sydney DESC
+  `, { jobId })
+}
+
+export async function getJobCallDetail(callId: string) {
+  // Mirrors getCallDetail: two-pass matching, same fallback chain
+  // Pass 1: exact call_id join to raw_calls (works for 8x8 call IDs)
+  const rows = await query(`
+    SELECT
+      li.lead_id,
+      li.contact_datetime_sydney AS call_datetime,
+      rc.norm_caller_phone AS caller_phone,
+      COALESCE(agent.callee_name, CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name END, rc.callee_name) AS operator,
+      CASE
+        WHEN rc.talk_time IS NOT NULL AND REGEXP_CONTAINS(rc.talk_time, r'^\d{2}:\d{2}:\d{2}$')
+        THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
+        ELSE NULL
+      END AS duration_seconds,
+      COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
+      COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_gcs_uri,
+      COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+    FROM \`${DS}.lead_interactions\` li
+    JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
+    LEFT JOIN \`${DS}.call_transcripts\` ct ON li.call_id = ct.call_id
+    LEFT JOIN \`${DS}.raw_recordings\` rr ON li.call_id = rr.call_id
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON li.lead_id = alc.lead_id
+    LEFT JOIN (
+      SELECT parent_call_id, callee_name,
+             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
+      FROM \`${DS}.raw_call_legs\`
+      WHERE answered = 'Answered' AND direction = 'Internal' AND parent_call_id IS NOT NULL
+        AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
+        AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+        AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
+    ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
+    WHERE li.call_id = @callId
+    LIMIT 1
+  `, { callId })
+
+  if (rows.length > 0) return rows
+
+  // Pass 2: WhatConverts call_id — no raw_calls match
+  // Fall back to tracking-number match ±30s, or return WC data directly
+  return query(`
+    SELECT
+      li.lead_id,
+      li.contact_datetime_sydney AS call_datetime,
+      COALESCE(rc.norm_caller_phone, li.contact_from) AS caller_phone,
+      COALESCE(
+        agent.callee_name,
+        CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name END,
+        rc.callee_name,
+        CASE WHEN (
+          EXTRACT(DAYOFWEEK FROM CAST(li.contact_datetime_sydney AS DATETIME)) IN (1, 7)
+          OR EXTRACT(HOUR FROM CAST(li.contact_datetime_sydney AS DATETIME)) < 7
+          OR (EXTRACT(HOUR FROM CAST(li.contact_datetime_sydney AS DATETIME)) = 16
+              AND EXTRACT(MINUTE FROM CAST(li.contact_datetime_sydney AS DATETIME)) >= 30)
+          OR EXTRACT(HOUR FROM CAST(li.contact_datetime_sydney AS DATETIME)) >= 17
+        ) THEN 'Afterhours Service' END
+      ) AS operator,
+      CASE
+        WHEN rc.talk_time IS NOT NULL AND REGEXP_CONTAINS(rc.talk_time, r'^\d{2}:\d{2}:\d{2}$')
+        THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
+        ELSE NULL
+      END AS duration_seconds,
+      COALESCE(ct.full_transcript, li.contact_content, alc.call_transcription) AS full_transcript,
+      COALESCE(rr.gcs_uri, li.gcs_uri) AS recording_gcs_uri,
+      COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+    FROM \`${DS}.lead_interactions\` li
+    LEFT JOIN \`${DS}.raw_calls\` rc
+      ON rc.caller = li.contact_to
+      AND rc.start_time BETWEEN
+        TIMESTAMP_SUB(CAST(li.contact_datetime AS TIMESTAMP), INTERVAL 30 SECOND)
+        AND TIMESTAMP_ADD(CAST(li.contact_datetime AS TIMESTAMP), INTERVAL 30 SECOND)
+    LEFT JOIN \`${DS}.call_transcripts\` ct ON rc.call_id = ct.call_id
+    LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
+    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON li.lead_id = alc.lead_id
+    LEFT JOIN (
+      SELECT parent_call_id, callee_name,
+             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
+      FROM \`${DS}.raw_call_legs\`
+      WHERE answered = 'Answered' AND direction = 'Internal' AND parent_call_id IS NOT NULL
+        AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
+        AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+        AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
+    ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
+    WHERE li.call_id = @callId
+    LIMIT 1
+  `, { callId })
+}
+
+export async function getJobEmailDetail(leadId: number, datetime: string) {
+  return query(`
+    SELECT
+      li.contact_datetime_sydney AS submitted_at,
+      li.contact_from AS from_address,
+      li.contact_to AS to_address,
+      li.contact_subject AS subject,
+      li.contact_content AS email_body
+    FROM \`${DS}.lead_interactions\` li
+    WHERE li.lead_id = @leadId
+      AND li.contact_type = 'Email'
+      AND CAST(li.contact_datetime AS STRING) = @datetime
+    LIMIT 1
+  `, { leadId, datetime })
+}
+
+export async function getJobNotes(jobId: string) {
+  return query(`
+    SELECT username, dateposted, timeposted, filter, note_clean
+    FROM \`pttr-taskdata.ds_aroflo.task_notes_deduped\`
+    WHERE jobnumber = @jobId
+    ORDER BY dateposted DESC, timeposted DESC
+  `, { jobId })
 }
 
 // ─── SEARCH ──────────────────────────────────────────────────────────────────
