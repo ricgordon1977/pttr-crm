@@ -322,9 +322,9 @@ Three reconciliations from the form ingestion report:
 
 | File | Purpose |
 |---|---|
-| `bigquery/view-definitions.sql` | All BQ view DDL (reference copy, not deployment script) |
-| `bigquery/vw_leads_unified_v3.sql` | Deployed spine source |
-| `bigquery/vw_lead_enriched_v3.sql` | Deployed lean read surface |
-| `bigquery/build_opportunities.sql` | Materialized opportunity clustering script |
-| `bigquery/vw_opportunities_v3.sql` | Deprecated (too complex for BQ view planner) |
+| `bigquery/vw_leads_unified.sql` | **Canonical** — deployed spine (call + form + email) |
+| `bigquery/vw_lead_enriched.sql` | **Canonical** — deployed lean read surface |
+| `bigquery/build_opportunities.sql` | **Canonical** — materialized opportunity clustering script |
+| `bigquery/view-definitions.sql` | Reference/audit copy of ALL BQ view DDL (not deployment source) |
+| `bigquery/archive/` | Superseded versions (v1, v2, v3_view) — do not edit |
 | `HANDOVER.md` | CRM app (Next.js) technical handover |
