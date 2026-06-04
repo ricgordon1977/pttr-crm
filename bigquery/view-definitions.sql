@@ -1741,3 +1741,111 @@ FROM (
 WHERE row_num = 1
 ;
 
+
+-- View: ds_crm.vw_leads_unified
+CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_leads_unified` AS
+WITH
+wc_calls AS (
+  SELECT
+    lead_id AS wc_lead_id,
+    phone_norm AS wc_phone,
+    TIMESTAMP(lead_datetime, 'Australia/Sydney') AS wc_timestamp,
+    channel AS wc_channel,
+    lead_source AS wc_source,
+    lead_medium AS wc_medium,
+    lead_campaign AS wc_campaign,
+    lead_keyword AS wc_keyword,
+    profile AS wc_profile,
+    tracking_number AS wc_tracking_number
+  FROM `pttr-taskdata.ds_crm.vw_leads`
+  WHERE channel = 'Call'
+),
+
+inbound_calls AS (
+  SELECT
+    rc.call_id,
+    rc.start_time,
+    rc.norm_caller_phone,
+    rc.caller,
+    rc.callee,
+    rc.callee_name,
+    rc.talk_time,
+    rc.answered,
+    rc.missed,
+    CASE
+      WHEN rc.talk_time IS NOT NULL AND REGEXP_CONTAINS(rc.talk_time, r'^\d{2}:\d{2}:\d{2}$')
+      THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
+         + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
+         + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
+      ELSE 0
+    END AS duration_sec,
+    CASE
+      WHEN EXTRACT(DAYOFWEEK FROM DATETIME(rc.start_time, 'Australia/Sydney')) BETWEEN 2 AND 6
+       AND EXTRACT(HOUR FROM DATETIME(rc.start_time, 'Australia/Sydney')) >= 7
+       AND EXTRACT(HOUR FROM DATETIME(rc.start_time, 'Australia/Sydney')) < 17
+      THEN TRUE ELSE FALSE
+    END AS is_business_hours,
+    CASE rc.callee
+      WHEN '754' THEN 'Paid Search (untracked DID)'
+      WHEN '753' THEN 'Paid Search (untracked DID)'
+      WHEN '717' THEN 'Web DID'
+      WHEN '712' THEN 'Web DID'
+      WHEN '733' THEN 'Web DID'
+      ELSE 'Direct'
+    END AS direct_subtype
+  FROM `pttr-taskdata.ds_crm.raw_calls` rc
+  WHERE rc.direction = 'Incoming'
+    AND rc.callee != '721'
+    AND NOT REGEXP_CONTAINS(rc.callee, r'^3\d{2}$')
+    AND rc.callee NOT LIKE 'ONA%'
+    AND rc.norm_caller_phone IS NOT NULL
+    AND rc.norm_caller_phone != ''
+),
+
+call_with_wc AS (
+  SELECT
+    ic.*,
+    wc.wc_lead_id,
+    wc.wc_channel,
+    wc.wc_source,
+    wc.wc_medium,
+    wc.wc_campaign,
+    wc.wc_keyword,
+    wc.wc_profile,
+    wc.wc_tracking_number,
+    ROW_NUMBER() OVER (
+      PARTITION BY ic.call_id
+      ORDER BY ABS(TIMESTAMP_DIFF(ic.start_time, wc.wc_timestamp, SECOND)) ASC
+    ) AS wc_rank
+  FROM inbound_calls ic
+  LEFT JOIN wc_calls wc
+    ON wc.wc_phone = ic.norm_caller_phone
+    AND wc.wc_timestamp BETWEEN TIMESTAMP_SUB(ic.start_time, INTERVAL 5 SECOND)
+                              AND TIMESTAMP_ADD(ic.start_time, INTERVAL 5 SECOND)
+)
+
+SELECT
+  call_id AS lead_id,
+  'call' AS source_type,
+  norm_caller_phone AS phone,
+  start_time AS lead_timestamp,
+  DATETIME(start_time, 'Australia/Sydney') AS lead_timestamp_sydney,
+  duration_sec,
+  callee AS queue_ext,
+  callee_name AS queue_name,
+  is_business_hours,
+  CASE WHEN wc_lead_id IS NOT NULL THEN 'whatconverts' ELSE 'direct_did' END AS attribution_source,
+  wc_lead_id,
+  COALESCE(wc_channel, 'Direct / Untracked') AS channel,
+  COALESCE(wc_source, 'direct') AS source,
+  COALESCE(wc_medium, '(none)') AS medium,
+  wc_campaign AS campaign,
+  wc_keyword AS keyword,
+  wc_profile AS profile,
+  wc_tracking_number AS tracking_number,
+  CASE WHEN wc_lead_id IS NULL THEN direct_subtype END AS direct_subtype,
+  answered,
+  missed,
+  talk_time
+FROM call_with_wc
+WHERE wc_rank = 1 OR wc_lead_id IS NULL;
