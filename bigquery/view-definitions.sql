@@ -1,5 +1,5 @@
 -- BigQuery View Definitions Backup
--- Updated: 2026-06-04T03:00:28.643Z
+-- Updated: 2026-06-04T03:12:19.024Z
 
 -- View: ds_crm.vw_account_locations
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_account_locations` AS
@@ -992,64 +992,91 @@ real_calls AS (
   SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE duration_sec >= 10
 ),
 
-bucketed AS (
-  SELECT rc.*,
-    CAST(FLOOR(TIMESTAMP_DIFF(rc.lead_timestamp,
-      FIRST_VALUE(rc.lead_timestamp) OVER (PARTITION BY rc.phone ORDER BY rc.lead_timestamp),
-      DAY) / 30) AS INT64) AS opp_bucket
+call_job AS (
+  SELECT rc.lead_id AS call_id, rc.phone, rc.lead_timestamp, rc.duration_sec,
+    rc.is_business_hours, rc.attribution_source, rc.channel, rc.source, rc.medium,
+    rc.campaign, rc.keyword, rc.profile, rc.wc_lead_id, rc.direct_subtype,
+    rc.queue_ext, rc.queue_name,
+    tc.jobnumber,
+    ROW_NUMBER() OVER (PARTITION BY rc.lead_id
+      ORDER BY ABS(DATE_DIFF(tc.requested_date_parsed, DATE(DATETIME(rc.lead_timestamp, 'Australia/Sydney')), DAY))) AS job_rank
   FROM real_calls rc
+  LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc
+    ON (tc.norm_client_mobile = rc.phone OR tc.id_phone = rc.phone)
+    AND tc.requested_date_parsed BETWEEN
+      DATE_SUB(DATE(DATETIME(rc.lead_timestamp, 'Australia/Sydney')), INTERVAL 5 DAY)
+      AND DATE_ADD(DATE(DATETIME(rc.lead_timestamp, 'Australia/Sydney')), INTERVAL 30 DAY)
 ),
 
-tagged AS (
-  SELECT
-    phone, opp_bucket, lead_timestamp, duration_sec,
-    FIRST_VALUE(lead_id) OVER w AS opportunity_id,
-    FIRST_VALUE(is_business_hours) OVER w AS is_business_hours,
-    FIRST_VALUE(attribution_source) OVER w AS attribution_source,
-    FIRST_VALUE(channel) OVER w AS channel,
-    FIRST_VALUE(source) OVER w AS source,
-    FIRST_VALUE(medium) OVER w AS medium,
-    FIRST_VALUE(campaign) OVER w AS campaign,
-    FIRST_VALUE(keyword) OVER w AS keyword,
-    FIRST_VALUE(profile) OVER w AS profile,
-    FIRST_VALUE(wc_lead_id) OVER w AS wc_lead_id,
-    FIRST_VALUE(direct_subtype) OVER w AS direct_subtype,
-    FIRST_VALUE(queue_ext) OVER w AS queue_ext,
-    FIRST_VALUE(queue_name) OVER w AS queue_name
-  FROM bucketed
-  WINDOW w AS (PARTITION BY phone, opp_bucket ORDER BY lead_timestamp)
+calls_tagged AS (
+  SELECT * EXCEPT(job_rank) FROM call_job WHERE job_rank = 1
 ),
 
-agg AS (
+-- PATH A: job-anchored — one opp per (phone, jobnumber)
+job_opps AS (
   SELECT
-    opportunity_id, phone,
+    MIN(call_id) AS opportunity_id, phone, jobnumber,
     MIN(lead_timestamp) AS opportunity_timestamp,
     MIN(DATETIME(lead_timestamp, 'Australia/Sydney')) AS opportunity_timestamp_sydney,
-    ANY_VALUE(is_business_hours) AS is_business_hours,
-    ANY_VALUE(attribution_source) AS attribution_source,
-    ANY_VALUE(channel) AS channel,
-    ANY_VALUE(source) AS source,
-    ANY_VALUE(medium) AS medium,
-    ANY_VALUE(campaign) AS campaign,
-    ANY_VALUE(keyword) AS keyword,
-    ANY_VALUE(profile) AS profile,
-    ANY_VALUE(wc_lead_id) AS wc_lead_id,
-    ANY_VALUE(direct_subtype) AS direct_subtype,
-    ANY_VALUE(queue_ext) AS queue_ext,
-    ANY_VALUE(queue_name) AS queue_name,
-    COUNT(*) AS call_count,
-    MAX(duration_sec) AS max_duration_sec
-  FROM tagged
-  GROUP BY opportunity_id, phone
+    COUNT(*) AS call_count, MAX(duration_sec) AS max_duration_sec,
+    'job_anchored' AS opp_type
+  FROM calls_tagged WHERE jobnumber IS NOT NULL
+  GROUP BY phone, jobnumber
+),
+
+-- PATH B: 7-day silence gap for calls with no job
+no_job_with_gap AS (
+  SELECT *,
+    CASE
+      WHEN LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp) IS NULL THEN TRUE
+      WHEN TIMESTAMP_DIFF(lead_timestamp,
+        LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp), HOUR) > 168 THEN TRUE
+      ELSE FALSE
+    END AS is_opp_start
+  FROM calls_tagged WHERE jobnumber IS NULL
+),
+
+with_seq AS (
+  SELECT *,
+    SUM(CASE WHEN is_opp_start THEN 1 ELSE 0 END)
+      OVER (PARTITION BY phone ORDER BY lead_timestamp ROWS UNBOUNDED PRECEDING) AS opp_seq
+  FROM no_job_with_gap
+),
+
+gap_opps AS (
+  SELECT
+    MIN(call_id) AS opportunity_id, phone,
+    CAST(NULL AS STRING) AS jobnumber,
+    MIN(lead_timestamp) AS opportunity_timestamp,
+    MIN(DATETIME(lead_timestamp, 'Australia/Sydney')) AS opportunity_timestamp_sydney,
+    COUNT(*) AS call_count, MAX(duration_sec) AS max_duration_sec,
+    'gap_based' AS opp_type
+  FROM with_seq
+  GROUP BY phone, opp_seq
+),
+
+-- Combine and add first-call attribution
+all_opps AS (
+  SELECT * FROM job_opps UNION ALL SELECT * FROM gap_opps
+),
+
+-- Join back to the first call in each opportunity for attribution
+with_attribution AS (
+  SELECT a.*,
+    rc.is_business_hours, rc.attribution_source, rc.channel, rc.source, rc.medium,
+    rc.campaign, rc.keyword, rc.profile, rc.wc_lead_id, rc.direct_subtype,
+    rc.queue_ext, rc.queue_name
+  FROM all_opps a
+  JOIN real_calls rc ON rc.lead_id = a.opportunity_id
 )
 
-SELECT a.*,
+SELECT wa.*,
   EXISTS(
     SELECT 1 FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
-    WHERE (tc.norm_client_mobile = a.phone OR tc.id_phone = a.phone)
-      AND tc.requested_date_parsed < DATE(a.opportunity_timestamp_sydney)
+    WHERE (tc.norm_client_mobile = wa.phone OR tc.id_phone = wa.phone)
+      AND tc.requested_date_parsed < DATE(wa.opportunity_timestamp_sydney)
   ) AS is_existing_customer
-FROM agg a;
+FROM with_attribution wa;
 
 -- View: ds_crm.vw_persons
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_persons` AS
