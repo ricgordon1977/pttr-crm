@@ -899,6 +899,12 @@ LEFT JOIN `pttr-taskdata.ds_crm.unified_leads` ul
 ORDER BY r.date_created_sydney DESC;
 
 -- View: ds_crm.vw_leads_unified
+-- Multi-source spine (call + form + email)
+-- source_type IN (call, form, email). email = parsed from raw_emails_received:
+--   Tier 1 Quinn Paid (gad_campaignid+gclid), Tier 2 Quinn Organic (LP Suburb/Service),
+--   Tier 3 WPForms (main site booking/question forms). Sender-agnostic detection.
+-- is_internal exclusion via lkp_did_trade; PM/Account phone exclusion.
+-- SEE: bigquery/vw_leads_unified_v3.sql for deployed source
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_leads_unified` AS
 WITH
 -- Pre-compute phones with >=10 outbound AND 0 AroFlo jobs = internal
@@ -924,12 +930,28 @@ internal_phones AS (
   WHERE jp.phone IS NULL
 ),
 
+-- PM/Account-only phones: phones that ONLY appear on Account-type jobs
+account_only_phones AS (
+  SELECT DISTINCT phone FROM (
+    SELECT norm_client_mobile AS phone FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type = 'Account' AND norm_client_mobile IS NOT NULL AND norm_client_mobile != ''
+    UNION DISTINCT
+    SELECT id_phone FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type = 'Account' AND id_phone IS NOT NULL AND id_phone != ''
+  )
+  EXCEPT DISTINCT
+  SELECT phone FROM (
+    SELECT norm_client_mobile AS phone FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type != 'Account' AND norm_client_mobile IS NOT NULL AND norm_client_mobile != ''
+    UNION DISTINCT
+    SELECT id_phone FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE customer_type != 'Account' AND id_phone IS NOT NULL AND id_phone != ''
+  )
+),
+
 wc_calls AS (
   SELECT lead_id AS wc_lead_id, phone_norm AS wc_phone,
     TIMESTAMP(lead_datetime, 'Australia/Sydney') AS wc_timestamp,
     channel AS wc_channel, lead_source AS wc_source, lead_medium AS wc_medium,
     lead_campaign AS wc_campaign, lead_keyword AS wc_keyword, profile AS wc_profile,
-    tracking_number AS wc_tracking_number
+    tracking_number AS wc_tracking_number,
+    contact_name AS wc_contact_name, email AS wc_email
   FROM `pttr-taskdata.ds_crm.vw_leads` WHERE channel = 'Call'
 ),
 
@@ -950,127 +972,181 @@ inbound_calls AS (
   FROM `pttr-taskdata.ds_crm.raw_calls` rc
   LEFT JOIN `pttr-taskdata.ds_crm.test_numbers` tn ON rc.norm_caller_phone = tn.phone_e164
   LEFT JOIN internal_phones ip ON rc.norm_caller_phone = ip.phone
+  LEFT JOIN `pttr-taskdata.ds_crm.lkp_did_trade` lkp ON rc.callee = lkp.did
+  LEFT JOIN account_only_phones aop ON rc.norm_caller_phone = aop.phone
   WHERE rc.direction = 'Incoming'
-    AND rc.callee != '721' AND NOT REGEXP_CONTAINS(rc.callee, r'^3\d{2}$') AND rc.callee NOT LIKE 'ONA%'
+    AND rc.callee != '721'
     AND rc.norm_caller_phone IS NOT NULL AND rc.norm_caller_phone != ''
     AND tn.phone_e164 IS NULL
     AND ip.phone IS NULL
+    AND COALESCE(lkp.is_internal, FALSE) = FALSE
+    AND aop.phone IS NULL  -- exclude PM/Account-only phones
 ),
 
 call_with_wc AS (
   SELECT ic.*, wc.wc_lead_id, wc.wc_channel, wc.wc_source, wc.wc_medium,
     wc.wc_campaign, wc.wc_keyword, wc.wc_profile, wc.wc_tracking_number,
+    wc.wc_contact_name, wc.wc_email,
     ROW_NUMBER() OVER (PARTITION BY ic.call_id ORDER BY ABS(TIMESTAMP_DIFF(ic.start_time, wc.wc_timestamp, SECOND))) AS wc_rank
   FROM inbound_calls ic
   LEFT JOIN wc_calls wc ON wc.wc_phone = ic.norm_caller_phone
     AND wc.wc_timestamp BETWEEN TIMESTAMP_SUB(ic.start_time, INTERVAL 5 SECOND) AND TIMESTAMP_ADD(ic.start_time, INTERVAL 5 SECOND)
+),
+
+-- === CALLS ===
+call_rows AS (
+  SELECT call_id AS lead_id, 'call' AS source_type, norm_caller_phone AS phone,
+    start_time AS lead_timestamp, DATETIME(start_time, 'Australia/Sydney') AS lead_timestamp_sydney,
+    duration_sec, callee AS queue_ext, callee_name AS queue_name, is_business_hours,
+    CASE WHEN wc_lead_id IS NOT NULL THEN 'whatconverts' ELSE 'direct_did' END AS attribution_source,
+    wc_lead_id, COALESCE(wc_channel, 'Direct / Untracked') AS channel,
+    COALESCE(wc_source, 'direct') AS source, COALESCE(wc_medium, '(none)') AS medium,
+    wc_campaign AS campaign, wc_keyword AS keyword, wc_profile AS profile,
+    wc_tracking_number AS tracking_number,
+    CASE WHEN wc_lead_id IS NULL THEN direct_subtype END AS direct_subtype,
+    CASE WHEN duration_sec = 0 THEN 'missed' WHEN duration_sec < 20 THEN 'dropped' ELSE 'connected' END AS call_outcome,
+    answered, missed, talk_time,
+    wc_contact_name AS contact_name,
+    wc_email AS email
+  FROM call_with_wc WHERE wc_rank = 1 OR wc_lead_id IS NULL
+),
+
+-- === WEB FORMS ===
+form_rows AS (
+  SELECT
+    CAST(lead_id AS STRING) AS lead_id,
+    'form' AS source_type,
+    CASE
+      WHEN phone_norm IS NOT NULL AND REGEXP_CONTAINS(phone_norm, r'^\+61[2-9]') THEN phone_norm
+      ELSE NULL
+    END AS phone,
+    TIMESTAMP(lead_datetime, 'Australia/Sydney') AS lead_timestamp,
+    lead_datetime AS lead_timestamp_sydney,
+    0 AS duration_sec,
+    CAST(NULL AS STRING) AS queue_ext,
+    CAST(NULL AS STRING) AS queue_name,
+    CASE WHEN EXTRACT(DAYOFWEEK FROM lead_datetime) BETWEEN 2 AND 6
+      AND EXTRACT(HOUR FROM lead_datetime) >= 7
+      AND EXTRACT(HOUR FROM lead_datetime) < 17
+      THEN TRUE ELSE FALSE END AS is_business_hours,
+    'whatconverts' AS attribution_source,
+    lead_id AS wc_lead_id,
+    'Form' AS channel,
+    lead_source AS source,
+    lead_medium AS medium,
+    lead_campaign AS campaign,
+    lead_keyword AS keyword,
+    profile,
+    tracking_number,
+    CAST(NULL AS STRING) AS direct_subtype,
+    'form_submit' AS call_outcome,
+    CAST(NULL AS STRING) AS answered,
+    CAST(NULL AS STRING) AS missed,
+    CAST(NULL AS STRING) AS talk_time,
+    contact_name,
+    email
+  FROM `pttr-taskdata.ds_crm.vw_leads`
+  WHERE channel = 'Form'
 )
 
-SELECT call_id AS lead_id, 'call' AS source_type, norm_caller_phone AS phone,
-  start_time AS lead_timestamp, DATETIME(start_time, 'Australia/Sydney') AS lead_timestamp_sydney,
-  duration_sec, callee AS queue_ext, callee_name AS queue_name, is_business_hours,
-  CASE WHEN wc_lead_id IS NOT NULL THEN 'whatconverts' ELSE 'direct_did' END AS attribution_source,
-  wc_lead_id, COALESCE(wc_channel, 'Direct / Untracked') AS channel,
-  COALESCE(wc_source, 'direct') AS source, COALESCE(wc_medium, '(none)') AS medium,
-  wc_campaign AS campaign, wc_keyword AS keyword, wc_profile AS profile,
-  wc_tracking_number AS tracking_number,
-  CASE WHEN wc_lead_id IS NULL THEN direct_subtype END AS direct_subtype,
-  CASE WHEN duration_sec = 0 THEN 'missed' WHEN duration_sec < 20 THEN 'dropped' ELSE 'connected' END AS call_outcome,
-  answered, missed, talk_time
-FROM call_with_wc WHERE wc_rank = 1 OR wc_lead_id IS NULL;
+-- === UNION: calls + forms (+ future email slot) ===
+SELECT * FROM call_rows
+UNION ALL
+SELECT * FROM form_rows;
+-- UNION ALL
+-- SELECT * FROM email_rows  -- future: parsed Quinn/YP email leads, source_type='email'
 
--- View: ds_crm.vw_opportunities
+-- Table: ds_crm.opportunities (materialized by bigquery/build_opportunities.sql)
+-- Connected-component clustering on phone OR email within 30 days
+-- AroFlo COD jobs are graph nodes (client-level AND task/location-level contacts).
+-- PM/Account work excluded. 5-round label propagation. Contactless jobs = singletons.
+-- View: ds_crm.vw_opportunities = SELECT * FROM ds_crm.opportunities
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_opportunities` AS
 WITH
 real_calls AS (
-  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE call_outcome = 'connected'
+  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified`
+  WHERE call_outcome IN ('connected', 'form_submit')
 ),
 
--- Match calls to AroFlo jobs (phone + time window)
-call_job AS (
-  SELECT rc.lead_id AS call_id, rc.phone, rc.lead_timestamp, rc.duration_sec,
-    rc.is_business_hours, rc.attribution_source, rc.channel, rc.source, rc.medium,
-    rc.campaign, rc.keyword, rc.profile, rc.wc_lead_id, rc.direct_subtype,
-    rc.queue_ext, rc.queue_name,
-    tc.jobnumber, tc.task_type AS job_task_type, tc.display_status AS job_status,
-    ROW_NUMBER() OVER (PARTITION BY rc.lead_id
-      ORDER BY ABS(DATE_DIFF(tc.requested_date_parsed, DATE(DATETIME(rc.lead_timestamp, 'Australia/Sydney')), DAY))) AS job_rank
-  FROM real_calls rc
-  LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc
-    ON (tc.norm_client_mobile = rc.phone OR tc.id_phone = rc.phone)
-    AND tc.requested_date_parsed BETWEEN
-      DATE_SUB(DATE(DATETIME(rc.lead_timestamp, 'Australia/Sydney')), INTERVAL 5 DAY)
-      AND DATE_ADD(DATE(DATETIME(rc.lead_timestamp, 'Australia/Sydney')), INTERVAL 30 DAY)
-),
-
-calls_tagged AS (
-  SELECT * EXCEPT(job_rank) FROM call_job WHERE job_rank = 1
-),
-
--- PATH A: job-anchored
-job_opps AS (
-  SELECT
-    MIN(call_id) AS opportunity_id, phone, jobnumber,
-    ANY_VALUE(job_task_type) AS job_task_type,
-    ANY_VALUE(job_status) AS job_status,
-    MIN(lead_timestamp) AS opportunity_timestamp,
-    MIN(DATETIME(lead_timestamp, 'Australia/Sydney')) AS opportunity_timestamp_sydney,
-    COUNT(*) AS call_count, MAX(duration_sec) AS max_duration_sec,
-    'job_anchored' AS opp_type
-  FROM calls_tagged WHERE jobnumber IS NOT NULL
-  GROUP BY phone, jobnumber
-),
-
--- PATH B: 30-day silence gap
-no_job_with_gap AS (
+-- 30-day same-phone collapse: new opp starts after 30-day silence
+with_gap AS (
   SELECT *,
     CASE
       WHEN LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp) IS NULL THEN TRUE
       WHEN TIMESTAMP_DIFF(lead_timestamp,
-        LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp), HOUR) > 720 THEN TRUE
+        LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp), SECOND) > 2592000 THEN TRUE
       ELSE FALSE
     END AS is_opp_start
-  FROM calls_tagged WHERE jobnumber IS NULL
+  FROM real_calls
 ),
 
 with_seq AS (
-  SELECT *, SUM(CASE WHEN is_opp_start THEN 1 ELSE 0 END)
-    OVER (PARTITION BY phone ORDER BY lead_timestamp ROWS UNBOUNDED PRECEDING) AS opp_seq
-  FROM no_job_with_gap
+  SELECT *,
+    SUM(CASE WHEN is_opp_start THEN 1 ELSE 0 END)
+      OVER (PARTITION BY phone ORDER BY lead_timestamp ROWS UNBOUNDED PRECEDING) AS opp_seq
+  FROM with_gap
 ),
 
-gap_opps AS (
+-- Aggregate to 1 row per opportunity; take attribution from earliest call
+opps AS (
   SELECT
-    MIN(call_id) AS opportunity_id, phone,
-    CAST(NULL AS STRING) AS jobnumber, CAST(NULL AS STRING) AS job_task_type, CAST(NULL AS STRING) AS job_status,
+    phone,
+    opp_seq,
     MIN(lead_timestamp) AS opportunity_timestamp,
     MIN(DATETIME(lead_timestamp, 'Australia/Sydney')) AS opportunity_timestamp_sydney,
-    COUNT(*) AS call_count, MAX(duration_sec) AS max_duration_sec,
-    'gap_based' AS opp_type
-  FROM with_seq GROUP BY phone, opp_seq
+    COUNT(*) AS call_count,
+    MAX(duration_sec) AS max_duration_sec,
+    ARRAY_AGG(
+      STRUCT(lead_id, is_business_hours, attribution_source, channel, source, medium,
+             campaign, keyword, profile, wc_lead_id, direct_subtype, queue_ext, queue_name,
+             call_outcome, answered, missed, talk_time)
+      ORDER BY lead_timestamp LIMIT 1
+    )[OFFSET(0)] AS first_call
+  FROM with_seq
+  GROUP BY phone, opp_seq
 ),
 
--- Combine
-all_opps AS (
-  SELECT * FROM job_opps UNION ALL SELECT * FROM gap_opps
+-- Match opportunity to closest AroFlo job; tiebreak by jobnumber for determinism
+opp_job AS (
+  SELECT o.phone, o.opp_seq, o.opportunity_timestamp, o.opportunity_timestamp_sydney,
+    o.call_count, o.max_duration_sec, o.first_call,
+    tc.jobnumber, tc.task_type AS job_task_type, tc.display_status AS job_status,
+    ROW_NUMBER() OVER (PARTITION BY o.phone, o.opp_seq
+      ORDER BY ABS(DATE_DIFF(tc.requested_date_parsed,
+        DATE(o.opportunity_timestamp_sydney), DAY)), tc.jobnumber) AS job_rank
+  FROM opps o
+  LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc
+    ON (tc.norm_client_mobile = o.phone OR tc.id_phone = o.phone)
+    AND tc.requested_date_parsed BETWEEN
+      DATE_SUB(DATE(o.opportunity_timestamp_sydney), INTERVAL 5 DAY)
+      AND DATE_ADD(DATE(o.opportunity_timestamp_sydney), INTERVAL 30 DAY)
 ),
 
--- Join first call for attribution
-with_attr AS (
-  SELECT a.*, rc.is_business_hours, rc.attribution_source, rc.channel, rc.source, rc.medium,
-    rc.campaign, rc.keyword, rc.profile, rc.wc_lead_id, rc.direct_subtype, rc.queue_ext, rc.queue_name
-  FROM all_opps a JOIN real_calls rc ON rc.lead_id = a.opportunity_id
+tagged AS (
+  SELECT * FROM opp_job WHERE job_rank = 1 OR jobnumber IS NULL
 ),
 
--- Account/COD tagging (layered)
--- 1. Job task_type if job-anchored
--- 2. Phone→client/contact→task_type if no job
--- 3. Unknown
+-- Deterministic ID: jobnumber when matched, else hash of phone+anchor timestamp
+with_id AS (
+  SELECT *,
+    CASE
+      WHEN jobnumber IS NOT NULL THEN CONCAT('J-', jobnumber)
+      ELSE CONCAT('G-', TO_HEX(MD5(CONCAT(phone, '|',
+        CAST(opportunity_timestamp AS STRING)))))
+    END AS opportunity_id
+  FROM tagged
+),
+
+-- Account / COD tagging
 phone_client_type AS (
   SELECT DISTINCT phone, customer_type FROM (
-    SELECT tc.norm_client_mobile AS phone, tc.customer_type FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc WHERE tc.norm_client_mobile IS NOT NULL AND tc.norm_client_mobile != ''
+    SELECT tc.norm_client_mobile AS phone, tc.customer_type
+    FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
+    WHERE tc.norm_client_mobile IS NOT NULL AND tc.norm_client_mobile != ''
     UNION ALL
-    SELECT tc.id_phone, tc.customer_type FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc WHERE tc.id_phone IS NOT NULL AND tc.id_phone != ''
+    SELECT tc.id_phone, tc.customer_type
+    FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
+    WHERE tc.id_phone IS NOT NULL AND tc.id_phone != ''
     UNION ALL
     SELECT CONCAT('+61', RIGHT(REGEXP_REPLACE(c.phone, r'[^0-9]', ''), 9)),
       CASE WHEN td.tasktasktype_tasktype LIKE 'Acc%' THEN 'Account' ELSE 'COD' END
@@ -1084,24 +1160,46 @@ phone_client_type AS (
     JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td ON td.client_clientid = c.clientid
     WHERE LENGTH(REGEXP_REPLACE(c.mobile, r'[^0-9]', '')) >= 8
   )
-  -- If phone maps to both Account and COD, prefer Account
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY phone ORDER BY CASE WHEN customer_type = 'Account' THEN 0 ELSE 1 END) = 1
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY phone
+    ORDER BY CASE WHEN customer_type = 'Account' THEN 0 ELSE 1 END) = 1
 )
 
-SELECT wa.*,
+SELECT
+  wi.opportunity_id,
+  wi.phone,
+  wi.jobnumber,
+  wi.job_task_type,
+  wi.job_status,
+  wi.opportunity_timestamp,
+  wi.opportunity_timestamp_sydney,
+  wi.call_count,
+  wi.max_duration_sec,
+  CASE WHEN wi.jobnumber IS NOT NULL THEN 'job_matched' ELSE 'gap_based' END AS opp_type,
+  wi.first_call.is_business_hours,
+  wi.first_call.attribution_source,
+  wi.first_call.channel,
+  wi.first_call.source,
+  wi.first_call.medium,
+  wi.first_call.campaign,
+  wi.first_call.keyword,
+  wi.first_call.profile,
+  wi.first_call.wc_lead_id,
+  wi.first_call.direct_subtype,
+  wi.first_call.queue_ext,
+  wi.first_call.queue_name,
   CASE
-    WHEN wa.job_task_type LIKE 'Acc%' THEN 'Account'
-    WHEN wa.job_task_type LIKE 'COD%' THEN 'COD'
+    WHEN wi.job_task_type LIKE 'Acc%' THEN 'Account'
+    WHEN wi.job_task_type LIKE 'COD%' THEN 'COD'
     WHEN pct.customer_type IS NOT NULL THEN pct.customer_type
     ELSE 'Unknown'
   END AS account_or_cod,
   EXISTS(
     SELECT 1 FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
-    WHERE (tc.norm_client_mobile = wa.phone OR tc.id_phone = wa.phone)
-      AND tc.requested_date_parsed < DATE(wa.opportunity_timestamp_sydney)
+    WHERE (tc.norm_client_mobile = wi.phone OR tc.id_phone = wi.phone)
+      AND tc.requested_date_parsed < DATE(wi.opportunity_timestamp_sydney)
   ) AS is_existing_customer
-FROM with_attr wa
-LEFT JOIN phone_client_type pct ON wa.phone = pct.phone;
+FROM with_id wi
+LEFT JOIN phone_client_type pct ON wi.phone = pct.phone;
 
 -- View: ds_crm.vw_persons
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_persons` AS
@@ -1360,4 +1458,70 @@ GROUP BY
   w.lead_medium, w.lead_type, w.lead_status, w.norm_phone,
   w.norm_email, w.has_jobs, w.has_sales, w.id_combined_sales,
   w.id_combined_jobnumbers;
+
+-- View: ds_crm.vw_lead_enriched
+-- Lean read surface v3: answered from raw_calls, captured = answered AND duration>=20s
+-- SEE: bigquery/vw_lead_enriched_v3.sql for deployed source
+CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_lead_enriched` AS
+SELECT
+  o.opportunity_id,
+  o.opportunity_timestamp_sydney AS created_at_sydney,
+  NOT COALESCE(o.is_business_hours, TRUE) AS is_after_hours,
+  CASE
+    WHEN lkp_did.trade IN ('PTTR', 'ETTR') THEN lkp_did.trade
+    WHEN o.profile = 'Plumber to the Rescue' THEN 'PTTR'
+    WHEN o.profile = 'Electrician to the Rescue' THEN 'ETTR'
+    WHEN o.job_task_type LIKE '%Plumb%' THEN 'PTTR'
+    WHEN o.job_task_type LIKE '%Electri%' THEN 'ETTR'
+    ELSE 'Unknown (confirm)'
+  END AS service,
+  CASE
+    WHEN lkp_did.trade IN ('PTTR', 'ETTR') THEN 'did'
+    WHEN o.profile IN ('Plumber to the Rescue', 'Electrician to the Rescue') THEN 'wc_profile'
+    WHEN o.job_task_type LIKE '%Plumb%' OR o.job_task_type LIKE '%Electri%' THEN 'aroflo_job'
+    ELSE 'unresolved'
+  END AS profile_source,
+  CASE WHEN o.opp_type = 'no_inbound' THEN 'direct_booking' WHEN o.channel = 'Form' THEN 'form' ELSE 'call' END AS lead_type,
+  COALESCE(
+    NULLIF(CASE WHEN UPPER(TRIM(wc.contact_name)) IN ('AUSTRALIA','INTERNATIONAL','NEW ZEALAND','UNITED STATES','UNITED KINGDOM')
+      THEN NULL ELSE INITCAP(TRIM(wc.contact_name)) END, ''),
+    NULLIF(o.contact_name, ''), NULLIF(tc.client_name, '')) AS contact_name,
+  o.phone,
+  COALESCE(NULLIF(wc.norm_email, ''), NULLIF(tc.norm_client_email, '')) AS email,
+  o.is_existing_customer, o.is_no_inbound_enquiry,
+  o.channel, o.source, o.medium,
+  lkp_camp.campaign_type, lkp_camp.division, lkp_camp.campaign_name,
+  o.keyword, o.wc_lead_id, o.matched_phones, o.matched_emails,
+  o.call_count, o.form_count,
+  CASE WHEN o.call_count > 0 THEN o.has_answered_call ELSE NULL END AS answered,
+  CASE WHEN o.call_count > 0 THEN o.has_answered_call AND o.max_duration_sec >= 20 ELSE NULL END AS captured,
+  CAST(NULL AS FLOAT64) AS first_response_minutes,
+  o.jobnumber AS job_numbers, o.all_jobnumbers, o.job_count,
+  CASE WHEN o.jobnumber IS NOT NULL THEN 'Booked' ELSE 'Not Booked' END AS booking_status,
+  COALESCE(all_jobs.total_value, SAFE_CAST(tc.task_invoices_total_ex AS NUMERIC)) AS job_value,
+  o.job_status,
+  CASE WHEN o.job_count > 1 AND COALESCE(all_jobs.any_completed, FALSE) THEN TRUE
+    WHEN o.job_count <= 1 AND tc.status = 'Archived' AND tc.job_status = 'Completed'
+      AND SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) > 0 THEN TRUE
+    WHEN o.jobnumber IS NOT NULL THEN FALSE ELSE NULL END AS completed,
+  CAST(NULL AS STRING) AS disposition, CAST(NULL AS STRING) AS loss_reason,
+  CAST(NULL AS STRING) AS csr_quality, CAST(NULL AS BOOL) AS quotable,
+  CAST(NULL AS STRING) AS lead_class, CAST(NULL AS FLOAT64) AS confidence,
+  CAST(NULL AS STRING) AS reasoning, CAST(NULL AS BOOL) AS needs_review
+FROM `pttr-taskdata.ds_crm.opportunities` o
+LEFT JOIN `pttr-taskdata.ds_crm.lkp_did_trade` lkp_did ON o.queue_ext = lkp_did.did
+LEFT JOIN `pttr-taskdata.gd_WhatConverts.all_leads_enriched` wc ON o.wc_lead_id = wc.lead_id
+LEFT JOIN `pttr-taskdata.ds_crm.lkp_campaign` lkp_camp ON COALESCE(wc.lp_gad_campaignid, o.campaign) = lkp_camp.campaign_id
+LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON o.jobnumber = tc.jobnumber
+LEFT JOIN (
+  SELECT o2.opportunity_id,
+    ROUND(SUM(SAFE_CAST(tc2.task_invoices_total_ex AS NUMERIC)), 2) AS total_value,
+    LOGICAL_OR(tc2.status = 'Archived' AND tc2.job_status = 'Completed'
+      AND SAFE_CAST(tc2.task_invoices_total_ex AS FLOAT64) > 0) AS any_completed
+  FROM `pttr-taskdata.ds_crm.opportunities` o2,
+    UNNEST(SPLIT(o2.all_jobnumbers, ',')) AS jn
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc2 ON TRIM(jn) = tc2.jobnumber
+  WHERE o2.job_count > 1
+  GROUP BY o2.opportunity_id
+) all_jobs ON o.opportunity_id = all_jobs.opportunity_id;
 
