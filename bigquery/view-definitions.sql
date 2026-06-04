@@ -1,7 +1,5 @@
 -- BigQuery View Definitions Backup
--- Generated: 2026-06-04T02:13:56.239Z
-
--- ═══ Dataset: ds_crm ═══
+-- Updated: 2026-06-04T03:00:28.643Z
 
 -- View: ds_crm.vw_account_locations
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_account_locations` AS
@@ -900,6 +898,159 @@ LEFT JOIN `pttr-taskdata.ds_crm.unified_leads` ul
   ON CAST(r.lead_id AS INT64) = ul.lead_id
 ORDER BY r.date_created_sydney DESC;
 
+-- View: ds_crm.vw_leads_unified
+CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_leads_unified` AS
+WITH
+wc_calls AS (
+  SELECT
+    lead_id AS wc_lead_id,
+    phone_norm AS wc_phone,
+    TIMESTAMP(lead_datetime, 'Australia/Sydney') AS wc_timestamp,
+    channel AS wc_channel,
+    lead_source AS wc_source,
+    lead_medium AS wc_medium,
+    lead_campaign AS wc_campaign,
+    lead_keyword AS wc_keyword,
+    profile AS wc_profile,
+    tracking_number AS wc_tracking_number
+  FROM `pttr-taskdata.ds_crm.vw_leads`
+  WHERE channel = 'Call'
+),
+
+inbound_calls AS (
+  SELECT
+    rc.call_id, rc.start_time, rc.norm_caller_phone, rc.caller,
+    rc.callee, rc.callee_name, rc.talk_time, rc.answered, rc.missed,
+    CASE
+      WHEN rc.talk_time IS NOT NULL AND REGEXP_CONTAINS(rc.talk_time, r'^\d{2}:\d{2}:\d{2}$')
+      THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
+         + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
+         + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
+      ELSE 0
+    END AS duration_sec,
+    CASE
+      WHEN EXTRACT(DAYOFWEEK FROM DATETIME(rc.start_time, 'Australia/Sydney')) BETWEEN 2 AND 6
+       AND EXTRACT(HOUR FROM DATETIME(rc.start_time, 'Australia/Sydney')) >= 7
+       AND EXTRACT(HOUR FROM DATETIME(rc.start_time, 'Australia/Sydney')) < 17
+      THEN TRUE ELSE FALSE
+    END AS is_business_hours,
+    CASE rc.callee
+      WHEN '754' THEN 'Paid Search (untracked DID)'
+      WHEN '753' THEN 'Paid Search (untracked DID)'
+      WHEN '717' THEN 'Web DID'
+      WHEN '712' THEN 'Web DID'
+      WHEN '733' THEN 'Web DID'
+      ELSE 'Direct'
+    END AS direct_subtype
+  FROM `pttr-taskdata.ds_crm.raw_calls` rc
+  WHERE rc.direction = 'Incoming'
+    AND rc.callee != '721'
+    AND NOT REGEXP_CONTAINS(rc.callee, r'^3\d{2}$')
+    AND rc.callee NOT LIKE 'ONA%'
+    AND rc.norm_caller_phone IS NOT NULL
+    AND rc.norm_caller_phone != ''
+    -- Exclude test numbers
+    AND rc.norm_caller_phone NOT IN (SELECT phone_e164 FROM `pttr-taskdata.ds_crm.test_numbers`)
+),
+
+call_with_wc AS (
+  SELECT ic.*,
+    wc.wc_lead_id, wc.wc_channel, wc.wc_source, wc.wc_medium,
+    wc.wc_campaign, wc.wc_keyword, wc.wc_profile, wc.wc_tracking_number,
+    ROW_NUMBER() OVER (
+      PARTITION BY ic.call_id
+      ORDER BY ABS(TIMESTAMP_DIFF(ic.start_time, wc.wc_timestamp, SECOND)) ASC
+    ) AS wc_rank
+  FROM inbound_calls ic
+  LEFT JOIN wc_calls wc
+    ON wc.wc_phone = ic.norm_caller_phone
+    AND wc.wc_timestamp BETWEEN TIMESTAMP_SUB(ic.start_time, INTERVAL 5 SECOND)
+                              AND TIMESTAMP_ADD(ic.start_time, INTERVAL 5 SECOND)
+)
+
+SELECT
+  call_id AS lead_id, 'call' AS source_type, norm_caller_phone AS phone,
+  start_time AS lead_timestamp,
+  DATETIME(start_time, 'Australia/Sydney') AS lead_timestamp_sydney,
+  duration_sec, callee AS queue_ext, callee_name AS queue_name, is_business_hours,
+  CASE WHEN wc_lead_id IS NOT NULL THEN 'whatconverts' ELSE 'direct_did' END AS attribution_source,
+  wc_lead_id,
+  COALESCE(wc_channel, 'Direct / Untracked') AS channel,
+  COALESCE(wc_source, 'direct') AS source,
+  COALESCE(wc_medium, '(none)') AS medium,
+  wc_campaign AS campaign, wc_keyword AS keyword, wc_profile AS profile,
+  wc_tracking_number AS tracking_number,
+  CASE WHEN wc_lead_id IS NULL THEN direct_subtype END AS direct_subtype,
+  answered, missed, talk_time
+FROM call_with_wc
+WHERE wc_rank = 1 OR wc_lead_id IS NULL;
+
+-- View: ds_crm.vw_opportunities
+CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_opportunities` AS
+WITH
+real_calls AS (
+  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE duration_sec >= 10
+),
+
+bucketed AS (
+  SELECT rc.*,
+    CAST(FLOOR(TIMESTAMP_DIFF(rc.lead_timestamp,
+      FIRST_VALUE(rc.lead_timestamp) OVER (PARTITION BY rc.phone ORDER BY rc.lead_timestamp),
+      DAY) / 30) AS INT64) AS opp_bucket
+  FROM real_calls rc
+),
+
+tagged AS (
+  SELECT
+    phone, opp_bucket, lead_timestamp, duration_sec,
+    FIRST_VALUE(lead_id) OVER w AS opportunity_id,
+    FIRST_VALUE(is_business_hours) OVER w AS is_business_hours,
+    FIRST_VALUE(attribution_source) OVER w AS attribution_source,
+    FIRST_VALUE(channel) OVER w AS channel,
+    FIRST_VALUE(source) OVER w AS source,
+    FIRST_VALUE(medium) OVER w AS medium,
+    FIRST_VALUE(campaign) OVER w AS campaign,
+    FIRST_VALUE(keyword) OVER w AS keyword,
+    FIRST_VALUE(profile) OVER w AS profile,
+    FIRST_VALUE(wc_lead_id) OVER w AS wc_lead_id,
+    FIRST_VALUE(direct_subtype) OVER w AS direct_subtype,
+    FIRST_VALUE(queue_ext) OVER w AS queue_ext,
+    FIRST_VALUE(queue_name) OVER w AS queue_name
+  FROM bucketed
+  WINDOW w AS (PARTITION BY phone, opp_bucket ORDER BY lead_timestamp)
+),
+
+agg AS (
+  SELECT
+    opportunity_id, phone,
+    MIN(lead_timestamp) AS opportunity_timestamp,
+    MIN(DATETIME(lead_timestamp, 'Australia/Sydney')) AS opportunity_timestamp_sydney,
+    ANY_VALUE(is_business_hours) AS is_business_hours,
+    ANY_VALUE(attribution_source) AS attribution_source,
+    ANY_VALUE(channel) AS channel,
+    ANY_VALUE(source) AS source,
+    ANY_VALUE(medium) AS medium,
+    ANY_VALUE(campaign) AS campaign,
+    ANY_VALUE(keyword) AS keyword,
+    ANY_VALUE(profile) AS profile,
+    ANY_VALUE(wc_lead_id) AS wc_lead_id,
+    ANY_VALUE(direct_subtype) AS direct_subtype,
+    ANY_VALUE(queue_ext) AS queue_ext,
+    ANY_VALUE(queue_name) AS queue_name,
+    COUNT(*) AS call_count,
+    MAX(duration_sec) AS max_duration_sec
+  FROM tagged
+  GROUP BY opportunity_id, phone
+)
+
+SELECT a.*,
+  EXISTS(
+    SELECT 1 FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
+    WHERE (tc.norm_client_mobile = a.phone OR tc.id_phone = a.phone)
+      AND tc.requested_date_parsed < DATE(a.opportunity_timestamp_sydney)
+  ) AS is_existing_customer
+FROM agg a;
+
 -- View: ds_crm.vw_persons
 CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_persons` AS
 WITH cleaned AS (
@@ -1158,777 +1309,3 @@ GROUP BY
   w.norm_email, w.has_jobs, w.has_sales, w.id_combined_sales,
   w.id_combined_jobnumbers;
 
--- ═══ Dataset: gd_WhatConverts ═══
-
--- View: gd_WhatConverts.leads_classifiable
-CREATE OR REPLACE VIEW `pttr-taskdata.gd_WhatConverts.leads_classifiable` AS
-SELECT *
-FROM `pttr-taskdata.gd_WhatConverts.leads_raw`
-WHERE (is_spam IS NULL OR is_spam = FALSE)
-  AND (is_test_lead IS NULL OR is_test_lead = 0)
-  AND (is_repeat_lead IS NULL OR is_repeat_lead = 0);
-
--- View: gd_WhatConverts.leads_master
-CREATE OR REPLACE VIEW `pttr-taskdata.gd_WhatConverts.leads_master` AS
-SELECT
-  r.lead_id, r.lead_profile, r.lead_created_sydney, r.lead_date, r.lead_source,
-  r.lead_medium, r.campaign_id, r.lead_keyword, r.landing_url, r.lead_type,
-  r.campaign_type, r.campaign_name, r.is_after_hours, r.lead_hour_sydney,
-  r.lead_day_of_week, r.time_of_day_category, r.is_spam, r.is_repeat_lead,
-  r.is_test_lead, r.is_unique_lead, r.wc_lead_summary, r.wc_intent, r.sentiment,
-  r.wc_call_type, r.answer_time_seconds, r.call_handling_score, r.agent,
-  r.call_transcription, r.voicemail_transcription, r.call_duration_seconds,
-  r.call_answered, r.contact_thread, r.interaction_count, r.call_count,
-  r.email_count, r.outbound_count, r.first_response_minutes, r.speed_to_lead_band,
-  r.lead_status AS wc_lead_status,
-  r.quotable, r.wc_sales_value, r.unified_revenue, r.applied_sales_value,
-  r.form_reason_did_not_convert, r.form_reason_did_not_convert_detail,
-  r.form_service_type, r.form_my_problem, r.form_body, r.form_my_address,
-  r.wc_job_number, r.unified_job_numbers, r.form_lead_status, r.form_job_number_alt,
-  r.job_description, r.job_notes, r.labour_notes,
-  r.aroflo_job_status, r.aroflo_job_substatus,
-  r.job_requested_date, r.job_due_date, r.job_completed_date, r.lead_to_job_days,
-  r.job_booked_ahead_days, r.lead_to_completion_days, r.is_booking,
-  r.is_converted_job, r.is_unbooked, r.lead_class, r.prev_classified_at,
-
-  -- Classification fields
-  c.lead_status,
-  c.booking_status,
-  c.job_type,
-  c.urgency,
-  c.loss_reason,
-  c.csr_quality,
-  c.is_recoverable,
-  c.confidence,
-  c.reasoning,
-
-  -- Clean dataset flag
-  (
-    COALESCE(r.is_test_lead, 0) = 0
-    AND COALESCE(r.is_repeat_lead, 0) = 0
-    AND COALESCE(r.is_spam, false) != true
-    AND c.lead_status != 'Wrong Number / Contact Details'
-  ) AS is_analysis_lead,
-
-  -- Full chronological communication record
-  ARRAY_TO_STRING(
-    ARRAY(
-      SELECT block FROM UNNEST([
-        NULLIF(
-          CONCAT('[', CAST(r.lead_created_sydney AS STRING), ' | Incoming Call]\n', r.call_transcription),
-          CONCAT('[', CAST(r.lead_created_sydney AS STRING), ' | Incoming Call]\n')
-        ),
-        NULLIF(
-          CONCAT('[', CAST(r.lead_created_sydney AS STRING), ' | Voicemail]\n', r.voicemail_transcription),
-          CONCAT('[', CAST(r.lead_created_sydney AS STRING), ' | Voicemail]\n')
-        ),
-        NULLIF(r.contact_thread, ''),
-        NULLIF(
-          CONCAT('[', CAST(r.job_requested_date AS STRING), ' | Job Description]\n', r.job_description),
-          CONCAT('[', CAST(r.job_requested_date AS STRING), ' | Job Description]\n')
-        ),
-        NULLIF(r.job_notes, ''),
-        NULLIF(CONCAT('[LABOUR NOTES]\n', r.labour_notes), '[LABOUR NOTES]\n')
-      ]) AS block
-      WHERE block IS NOT NULL
-    ),
-    '\n\n---\n\n'
-  ) AS full_communication_thread
-
-FROM `pttr-taskdata.gd_WhatConverts.leads_raw` r
-LEFT JOIN `pttr-taskdata.gd_WhatConverts.lead_classifications` c
-  ON CAST(r.lead_id AS INT64) = CAST(c.lead_id AS INT64)
-WHERE COALESCE(r.is_test_lead, 0) = 0
-  AND COALESCE(r.is_repeat_lead, 0) = 0
-  AND COALESCE(r.is_spam, false) != true;
-
--- ═══ Dataset: ds_aroflo ═══
-
--- View: ds_aroflo.client_customfields_deduped
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.client_customfields_deduped` AS
-
-SELECT * EXCEPT(row_num)
-FROM (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY clientid, field_name ORDER BY ingested_at DESC) AS row_num
-  FROM `pttr-taskdata.ds_aroflo.client_customfields_raw`
-)
-WHERE row_num = 1
-;
-
--- View: ds_aroflo.client_customfields_pivot
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.client_customfields_pivot` AS
-SELECT clientid, clientname,
-  MAX(CASE WHEN field_name_norm = 'campaign_initial_do_not_use' THEN field_value END) AS campaign_initial_do_not_use,
-  MAX(CASE WHEN field_name_norm = 'campaign_initial_drop_down' THEN field_value END) AS campaign_initial_drop_down,
-  MAX(CASE WHEN field_name_norm = 'ceo_invoices_up_to_june_2014' THEN field_value END) AS ceo_invoices_up_to_june_2014,
-  MAX(CASE WHEN field_name_norm = 'ceo_last_job_date' THEN field_value END) AS ceo_last_job_date,
-  MAX(CASE WHEN field_name_norm = 'client_charge_rate' THEN field_value END) AS client_charge_rate,
-  MAX(CASE WHEN field_name_norm = 'client_sub_type' THEN field_value END) AS client_sub_type,
-  MAX(CASE WHEN field_name_norm = 'courtesy_insp_date_carried_out' THEN field_value END) AS courtesy_insp_date_carried_out,
-  MAX(CASE WHEN field_name_norm = 'courtesy_insp_date_client_called' THEN field_value END) AS courtesy_insp_date_client_called,
-  MAX(CASE WHEN field_name_norm = 'date_client_entered' THEN field_value END) AS date_client_entered,
-  MAX(CASE WHEN field_name_norm = 'office_person_who_invoices_this_client' THEN field_value END) AS office_person_who_invoices_this_client,
-  MAX(CASE WHEN field_name_norm = 'service_agreement_exp_date' THEN field_value END) AS service_agreement_exp_date,
-  MAX(CASE WHEN field_name_norm = 'testttttt' THEN field_value END) AS testttttt,
-  MAX(CASE WHEN field_name_norm = 'zone_area' THEN field_value END) AS zone_area
-FROM `pttr-taskdata.ds_aroflo.client_customfields_deduped`
-GROUP BY clientid, clientname;
-
--- View: ds_aroflo.contacts_deduped
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.contacts_deduped` AS
-
-SELECT * EXCEPT(row_num)
-FROM (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY contactid ORDER BY ingested_at DESC) AS row_num
-  FROM `pttr-taskdata.ds_aroflo.contacts_raw`
-)
-WHERE row_num = 1
-;
-
--- View: ds_aroflo.email_marketing_final
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.email_marketing_final` AS
-WITH aroflo AS (
-  SELECT
-    email,
-    firstname,
-    surname,
-    clientname,
-    mobile,
-    phone,
-    address_suburb,
-    address_postcode,
-    customer_type,
-    service_category,
-    service_type,
-    last_job_date,
-    total_jobs,
-    total_spend,
-    avg_job_value,
-    had_hw_replacement,
-    had_hw_repair,
-    had_switchboard,
-    had_blocked_drain,
-    had_relining,
-    had_digup,
-    lead_source,
-    acquisition_channel,
-    original_lead_source,
-    original_lead_medium,
-    original_lead_campaign,
-    original_lead_keyword,
-    original_lead_type,
-    lead_brand,
-    google_ads_campaign_type,
-    digital_acquisition_channel,
-    has_lead_attribution,
-    'AroFlo COD' AS list_source
-  FROM `pttr-taskdata.ds_aroflo.email_marketing_list_cod`
-  WHERE is_suppressed = 0
-    AND email IS NOT NULL
-    AND email != ''
-),
-
-mailchimp AS (
-  SELECT
-    email,
-    first_name AS firstname,
-    last_name AS surname,
-    CAST(NULL AS STRING) AS clientname,
-    CAST(NULL AS STRING) AS mobile,
-    CAST(NULL AS STRING) AS phone,
-    CAST(NULL AS STRING) AS address_suburb,
-    CAST(NULL AS STRING) AS address_postcode,
-    CAST(NULL AS STRING) AS customer_type,
-    CAST(NULL AS STRING) AS service_category,
-    CAST(NULL AS STRING) AS service_type,
-    CAST(NULL AS STRING) AS last_job_date,
-    CAST(NULL AS INT64) AS total_jobs,
-    CAST(NULL AS NUMERIC) AS total_spend,
-    CAST(NULL AS FLOAT64) AS avg_job_value,
-    CAST(NULL AS INT64) AS had_hw_replacement,
-    CAST(NULL AS INT64) AS had_hw_repair,
-    CAST(NULL AS INT64) AS had_switchboard,
-    CAST(NULL AS INT64) AS had_blocked_drain,
-    CAST(NULL AS INT64) AS had_relining,
-    CAST(NULL AS INT64) AS had_digup,
-    source AS lead_source,
-    CAST(NULL AS STRING) AS acquisition_channel,
-    CAST(NULL AS STRING) AS original_lead_source,
-    CAST(NULL AS STRING) AS original_lead_medium,
-    CAST(NULL AS STRING) AS original_lead_campaign,
-    CAST(NULL AS STRING) AS original_lead_keyword,
-    CAST(NULL AS STRING) AS original_lead_type,
-    CAST(NULL AS STRING) AS lead_brand,
-    CAST(NULL AS STRING) AS google_ads_campaign_type,
-    CAST(NULL AS STRING) AS digital_acquisition_channel,
-    FALSE AS has_lead_attribution,
-    'Mailchimp Only' AS list_source
-  FROM `pttr-taskdata.ds_aroflo.mailchimp_new_contacts`
-),
-
-combined AS (
-  SELECT *, ROW_NUMBER() OVER (
-    PARTITION BY LOWER(TRIM(email))
-    ORDER BY CASE WHEN list_source = 'AroFlo COD' THEN 0 ELSE 1 END
-  ) AS rn
-  FROM (
-    SELECT * FROM aroflo
-    UNION ALL
-    SELECT * FROM mailchimp
-  )
-)
-
-SELECT * EXCEPT(rn)
-FROM combined
-WHERE rn = 1;
-
--- View: ds_aroflo.email_marketing_list
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.email_marketing_list` AS
-SELECT
-  c.clientid,
-  c.firstname,
-  c.surname,
-  c.clientname,
-  c.email,
-  c.mobile,
-  c.phone,
-  c.address_suburb,
-  c.address_postcode,
-  MAX(t.completeddate) as last_job_date,
-  COUNT(DISTINCT t.taskid) as total_jobs,
-  SUM(i.total_inc) as total_spend,
-  ROUND(AVG(i.total_inc), 2) as avg_job_value,
-
-  -- Broad category flags
-  MAX(CASE WHEN cf.primary_work_type LIKE 'HOT WATER%' THEN 1 ELSE 0 END) as has_hot_water,
-  MAX(CASE WHEN cf.primary_work_type LIKE 'ELECTRICAL%' THEN 1 ELSE 0 END) as has_electrical,
-  MAX(CASE WHEN cf.primary_work_type LIKE 'DRAIN%' THEN 1 ELSE 0 END) as has_drain,
-  MAX(CASE WHEN cf.primary_work_type LIKE 'PLUMBING%' THEN 1 ELSE 0 END) as has_plumbing,
-  MAX(CASE WHEN cf.primary_work_type LIKE 'Waterproofing%' THEN 1 ELSE 0 END) as has_waterproofing,
-
-  -- High value specific flags
-  MAX(CASE WHEN cf.primary_work_type = 'HOT WATER- REPLACEMENT-Tanks / Boilers/ all types' THEN 1 ELSE 0 END) as had_hw_replacement,
-  MAX(CASE WHEN cf.primary_work_type = 'HOT WATER-Heater / Boiler repairs-Element/ thermostat/ TPR/ Anode/ etc' THEN 1 ELSE 0 END) as had_hw_repair,
-  MAX(CASE WHEN cf.primary_work_type = 'ELECTRICAL Switchboard Upgrades' THEN 1 ELSE 0 END) as had_switchboard,
-  MAX(CASE WHEN cf.primary_work_type = 'DRAIN-BLOCKAGE-IN GROUND-eel / jet' THEN 1 ELSE 0 END) as had_blocked_drain,
-  MAX(CASE WHEN cf.primary_work_type = 'DRAIN-RELINES' THEN 1 ELSE 0 END) as had_relining,
-  MAX(CASE WHEN cf.primary_work_type = 'DRAIN-DIGUPS- all types-sewer & SW' THEN 1 ELSE 0 END) as had_digup,
-
-  -- Emergency flag
-  MAX(CASE WHEN cf.primary_work_type LIKE '%After Hours%' THEN 1 ELSE 0 END) as has_emergency_job
-
-FROM `pttr-taskdata.ds_aroflo.clients_deduped` c
-JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` t ON c.clientid = t.client_clientid
-JOIN `pttr-taskdata.ds_aroflo.task_customfields_raw` cf ON t.taskid = cf.taskid
-LEFT JOIN `pttr-taskdata.ds_aroflo.invoices_for_bi` i ON c.clientid = i.client_id
-WHERE t.tasktype LIKE 'COD%'
-AND cf.primary_work_type IS NOT NULL 
-AND cf.primary_work_type != ''
-AND cf.primary_work_type != 'None'
-AND c.firstname NOT IN ('Accounts', 'Strata', 'Admin', 'Misc')
-GROUP BY 1,2,3,4,5,6,7,8,9;
-
--- View: ds_aroflo.email_marketing_list_cod
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.email_marketing_list_cod` AS
-WITH phone_norm AS (
-  -- Normalise client phones to 61-prefixed digits for matching
-  SELECT
-    c.clientid,
-    c.firstname,
-    c.surname,
-    c.clientname,
-    c.email,
-    c.mobile,
-    c.phone,
-    c.address_suburb,
-    c.address_postcode,
-    -- Strip non-digits, replace leading 0 with 61
-    REGEXP_REPLACE(REGEXP_REPLACE(c.mobile, r'[^0-9]', ''), r'^0', '61') AS norm_mobile,
-    REGEXP_REPLACE(REGEXP_REPLACE(c.phone, r'[^0-9]', ''), r'^0', '61') AS norm_phone
-  FROM `pttr-taskdata.ds_aroflo.clients_deduped` c
-  WHERE c.firstname NOT IN ('Accounts', 'Strata', 'Admin', 'Misc')
-),
-
-lead_attribution AS (
-  -- Match clients to WhatConverts leads via phone or email, pick most recent lead per client
-  SELECT
-    pn.clientid,
-    ARRAY_AGG(
-      STRUCT(
-        alc.lead_source,
-        alc.lead_medium,
-        alc.lead_campaign,
-        alc.lead_keyword,
-        alc.lead_type,
-        alc.profile AS lead_profile,
-        alc.date_created_sydney
-      )
-      ORDER BY alc.date_created_sydney DESC
-      LIMIT 1
-    )[OFFSET(0)] AS attr
-  FROM phone_norm pn
-  JOIN `pttr-taskdata.gd_WhatConverts.all_leads_classified` alc
-    ON (pn.norm_mobile != '' AND pn.norm_mobile = REGEXP_REPLACE(REGEXP_REPLACE(alc.phone_number, r'[^0-9]', ''), r'^0', '61'))
-    OR (pn.norm_mobile != '' AND pn.norm_mobile = REGEXP_REPLACE(REGEXP_REPLACE(alc.caller_number, r'[^0-9]', ''), r'^0', '61'))
-    OR (pn.norm_phone != '' AND pn.norm_phone = REGEXP_REPLACE(REGEXP_REPLACE(alc.phone_number, r'[^0-9]', ''), r'^0', '61'))
-    OR (pn.norm_phone != '' AND pn.norm_phone = REGEXP_REPLACE(REGEXP_REPLACE(alc.caller_number, r'[^0-9]', ''), r'^0', '61'))
-    OR (pn.clientid IS NOT NULL
-        AND LOWER(TRIM(pn.email)) != ''
-        AND LOWER(TRIM(pn.email)) = LOWER(TRIM(alc.contact_email_address)))
-  GROUP BY pn.clientid
-),
-
-client_campaign_counts AS (
-  -- Count campaign_most_popular per client
-  SELECT
-    t.client_clientid AS clientid,
-    cf.campaign_most_popular AS lead_source,
-    COUNT(*) AS cnt
-  FROM `pttr-taskdata.ds_aroflo.tasks_deduped` t
-  JOIN `pttr-taskdata.ds_aroflo.task_customfields_raw` cf ON t.taskid = cf.taskid
-  WHERE t.tasktype LIKE 'COD%'
-    AND cf.campaign_most_popular IS NOT NULL
-    AND cf.campaign_most_popular != ''
-  GROUP BY t.client_clientid, cf.campaign_most_popular
-),
-client_lead_source AS (
-  -- Pick the most frequent value per client (MODE)
-  SELECT clientid, lead_source
-  FROM client_campaign_counts
-  QUALIFY ROW_NUMBER() OVER (PARTITION BY clientid ORDER BY cnt DESC) = 1
-),
-
-campaign_dim AS (
-  SELECT campaign_name, campaign_type
-  FROM `pttr-taskdata.ds_GoogleAds.campaign_type_dim`
-)
-
-SELECT
-  c.clientid,
-  c.firstname,
-  c.surname,
-  c.clientname,
-  c.email,
-  c.mobile,
-  c.phone,
-  c.address_suburb,
-  c.address_postcode,
-  'Residential COD' AS customer_type,
-
-  -- Service category from most recent job's primary work type
-  CASE ARRAY_AGG(cf.primary_work_type ORDER BY t.completeddate DESC LIMIT 1)[OFFSET(0)]
-    WHEN 'HOT WATER- REPLACEMENT-Tanks / Boilers/ all types' THEN 'Hot Water Systems'
-    WHEN 'HOT WATER-Heater / Boiler repairs-Element/ thermostat/ TPR/ Anode/ etc' THEN 'Hot Water Systems'
-    WHEN 'HOT WATER- PERIODICAL-servicing' THEN 'Hot Water Systems'
-    WHEN 'HOT WATER-Warranty Work' THEN 'Hot Water Systems'
-    WHEN 'DRAIN-BLOCKAGE-IN GROUND-eel / jet' THEN 'Blocked Drains'
-    WHEN 'DRAIN- After Hours-IN GROUND BLOCKAGES' THEN 'Blocked Drains'
-    WHEN 'DRAIN-PERIODICAL-Vaporooter' THEN 'Blocked Drains'
-    WHEN 'DRAIN-PERIODICAL-Sewer/SW Pipes-jetting/eel' THEN 'Blocked Drains'
-    WHEN 'DRAIN-RELINES' THEN 'Drain Relining'
-    WHEN 'DRAIN-DIGUPS- all types-sewer & SW' THEN 'Drain Relining'
-    WHEN 'DRAIN- Warranty Work' THEN 'Blocked Drains'
-    WHEN 'ELECTRICAL Switchboard Upgrades' THEN 'Switchboard Upgrades'
-    WHEN 'ELECTRICAL Repairs/ Maintenance' THEN 'General Electrical'
-    WHEN 'ELECTRICAL-AFTER HOURS' THEN 'General Electrical'
-    WHEN 'ELECTRICAL Warranty Work' THEN 'General Electrical'
-    WHEN 'ELECTRICAL PERIODICAL-testing/Inspections' THEN 'General Electrical'
-    WHEN 'Waterproofing-Showers/ Baths/ bathrooms/ etc' THEN 'Waterproofing'
-    WHEN 'Waterproofing-Warranty Work' THEN 'Waterproofing'
-    ELSE 'General Plumbing'
-  END AS service_category,
-
-  CASE
-    WHEN MAX(CASE WHEN cf.primary_work_type LIKE '%After Hours%' THEN 1 ELSE 0 END) = 1
-    THEN 'After Hours'
-    ELSE 'Standard Hours'
-  END AS service_type,
-
-  MAX(t.completeddate) AS last_job_date,
-  COUNT(DISTINCT t.taskid) AS total_jobs,
-  SUM(i.total_inc) AS total_spend,
-  ROUND(AVG(i.total_inc), 2) AS avg_job_value,
-
-  -- Service history flags
-  MAX(CASE WHEN cf.primary_work_type = 'HOT WATER- REPLACEMENT-Tanks / Boilers/ all types' THEN 1 ELSE 0 END) AS had_hw_replacement,
-  MAX(CASE WHEN cf.primary_work_type = 'HOT WATER-Heater / Boiler repairs-Element/ thermostat/ TPR/ Anode/ etc' THEN 1 ELSE 0 END) AS had_hw_repair,
-  MAX(CASE WHEN cf.primary_work_type = 'ELECTRICAL Switchboard Upgrades' THEN 1 ELSE 0 END) AS had_switchboard,
-  MAX(CASE WHEN cf.primary_work_type = 'DRAIN-BLOCKAGE-IN GROUND-eel / jet' THEN 1 ELSE 0 END) AS had_blocked_drain,
-  MAX(CASE WHEN cf.primary_work_type = 'DRAIN-RELINES' THEN 1 ELSE 0 END) AS had_relining,
-  MAX(CASE WHEN cf.primary_work_type = 'DRAIN-DIGUPS- all types-sewer & SW' THEN 1 ELSE 0 END) AS had_digup,
-
-  -- Self-reported lead source (MODE of campaign_most_popular across all client jobs)
-  cls.lead_source,
-
-  -- Cleaned acquisition channel grouped from lead_source
-  CASE
-    -- Digital / website leads
-    WHEN cls.lead_source IN ('PTTR-Website', 'ETTR-Website', 'MR WASHER-Website', 'Tawkto') THEN 'Google / Website'
-    -- Acquired businesses and existing clients
-    WHEN cls.lead_source IN ('EXISTING CUSTOMERS', 'Existing Customers from Micronet',
-         'Accord Plumbing', 'Lawson Brothers Plumbing', 'Waterpro(Tap Doctor) Jobs')
-      OR cls.lead_source LIKE 'PTTR-Exist%' THEN 'Existing Customer'
-    -- Strata / agent referrals
-    WHEN cls.lead_source = 'a Recomended by Strata or Agent' OR cls.lead_source = 'SERVICE AGREEMENT' THEN 'Strata / Agent Referral'
-    -- Word of mouth (catch-all for recommend variants)
-    WHEN UPPER(cls.lead_source) LIKE '%RECOMMEND%' OR UPPER(cls.lead_source) LIKE '%RECOMEND%' THEN 'Word of Mouth'
-    -- Directory and listing sites
-    WHEN cls.lead_source IN ('True Local search site', 'HI PAGES', 'Social Media', 'a YP On-Line (YELLOW50)')
-      OR UPPER(cls.lead_source) LIKE '%YELLOW%' OR UPPER(cls.lead_source) LIKE '%HI PAGE%'
-      OR UPPER(cls.lead_source) LIKE '%TRUE LOCAL%' THEN 'Directory / Listings'
-    -- Print and local media
-    WHEN UPPER(cls.lead_source) LIKE '%NEWSPAPER%' OR UPPER(cls.lead_source) LIKE '%NEWS%'
-      OR cls.lead_source IN ('Local Newspaper', 'Lane Cove Local', 'Big Inner West News', 'ETTR SG News') THEN 'Print / Local'
-    -- Signage (stickers, vehicle signwriting)
-    WHEN UPPER(cls.lead_source) LIKE '%SIGN%' OR UPPER(cls.lead_source) LIKE '%STICKER%' THEN 'Signage'
-    -- Direct mail, magnets, mailouts, emailers
-    WHEN UPPER(cls.lead_source) LIKE '%MAGNET%' OR UPPER(cls.lead_source) LIKE '%FRIDGE%'
-      OR UPPER(cls.lead_source) LIKE '%LETTERBOX%' OR UPPER(cls.lead_source) LIKE '%MAILOUT%' OR UPPER(cls.lead_source) LIKE '%MAIL%'
-      OR UPPER(cls.lead_source) LIKE '%EMAILER%' THEN 'Direct Mail / Magnet'
-    -- Seasonal and dated campaigns (SPRING19, AUTUMN17, LOCAL16, XMAS14, EASTER13, etc.)
-    WHEN UPPER(cls.lead_source) LIKE '%SPRING%' OR UPPER(cls.lead_source) LIKE '%AUTUMN%'
-      OR UPPER(cls.lead_source) LIKE '%WINTER%' OR UPPER(cls.lead_source) LIKE '%SUMMER%'
-      OR UPPER(cls.lead_source) LIKE '%XMAS%' OR UPPER(cls.lead_source) LIKE '%EASTER%'
-      OR REGEXP_CONTAINS(cls.lead_source, r'^LOCAL\d') THEN 'Seasonal Campaign'
-    -- Promo codes and discounts
-    WHEN UPPER(cls.lead_source) LIKE '%$50%' OR UPPER(cls.lead_source) LIKE '%DISCOUNT%'
-      OR cls.lead_source IN ('WEB50: $50 discount from job - still pays service', 'PDRAIN99', '99SAFETYINSPECT', 'NCDL$50OFF')
-      OR REGEXP_CONTAINS(cls.lead_source, r'\d{2,}$') THEN 'Promo / Discount'
-    -- Seniors
-    WHEN UPPER(cls.lead_source) LIKE '%SENIOR%' THEN 'Seniors'
-    -- Genuinely unclassifiable
-    WHEN cls.lead_source IS NOT NULL THEN 'Other'
-    ELSE 'Unknown'
-  END AS acquisition_channel,
-
-  -- Digital lead source attribution (from most recent matched WhatConverts lead)
-  la.attr.lead_source AS original_lead_source,
-  la.attr.lead_medium AS original_lead_medium,
-  la.attr.lead_campaign AS original_lead_campaign,
-  la.attr.lead_keyword AS original_lead_keyword,
-  la.attr.lead_type AS original_lead_type,
-  la.attr.lead_profile AS lead_brand,
-  cd.campaign_type AS google_ads_campaign_type,
-  CASE
-    WHEN la.attr.lead_source = 'google' AND la.attr.lead_medium = 'cpc' THEN 'Google Ads'
-    WHEN la.attr.lead_source = 'google' AND la.attr.lead_medium = 'organic' THEN 'Google Organic'
-    WHEN la.attr.lead_source = 'gmb' THEN 'Google Business Profile'
-    WHEN la.attr.lead_source = '(direct)' THEN 'Direct'
-    WHEN la.attr.lead_source IS NOT NULL THEN 'Other'
-    ELSE 'Unknown'
-  END AS digital_acquisition_channel,
-  CASE WHEN la.clientid IS NOT NULL THEN TRUE ELSE FALSE END AS has_lead_attribution,
-
-  -- Mailchimp suppression flag
-  CASE WHEN es.email IS NOT NULL THEN 1 ELSE 0 END AS is_suppressed
-
-FROM `pttr-taskdata.ds_aroflo.clients_deduped` c
-JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` t ON c.clientid = t.client_clientid
-JOIN `pttr-taskdata.ds_aroflo.task_customfields_raw` cf ON t.taskid = cf.taskid
-LEFT JOIN `pttr-taskdata.ds_aroflo.invoices_for_bi` i ON c.clientid = i.client_id
-LEFT JOIN client_lead_source cls ON c.clientid = cls.clientid
-LEFT JOIN lead_attribution la ON c.clientid = la.clientid
-LEFT JOIN campaign_dim cd ON la.attr.lead_campaign = cd.campaign_name
-LEFT JOIN `pttr-taskdata.ds_aroflo.email_suppressions` es ON LOWER(TRIM(c.email)) = LOWER(TRIM(es.email))
-WHERE t.tasktype LIKE 'COD%'
-  AND cf.primary_work_type IS NOT NULL
-  AND cf.primary_work_type != ''
-  AND cf.primary_work_type != 'None'
-  AND c.firstname NOT IN ('Accounts', 'Strata', 'Admin', 'Misc')
-GROUP BY
-  c.clientid, c.firstname, c.surname, c.clientname, c.email, c.mobile, c.phone,
-  c.address_suburb, c.address_postcode,
-  cls.lead_source,
-  la.attr.lead_source, la.attr.lead_medium, la.attr.lead_campaign,
-  la.attr.lead_keyword, la.attr.lead_type, la.attr.lead_profile,
-  la.attr.date_created_sydney,
-  cd.campaign_type, la.clientid, es.email;
-
--- View: ds_aroflo.monthly_task_summary
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.monthly_task_summary` AS
-WITH daily AS (
-  SELECT
-    requested_date_parsed,
-    customer_type,
-    COUNT(*) AS task_count,
-    COUNTIF(task_invoices_total_ex IS NOT NULL AND task_invoices_total_ex > 0) AS invoice_count,
-    SUM(COALESCE(task_invoices_total_ex, 0)) AS invoice_total
-  FROM `pttr-taskdata.ds_aroflo.tasks_complete`
-  GROUP BY 1, 2
-),
-
-monthly AS (
-  SELECT
-    DATE_TRUNC(requested_date_parsed, MONTH) AS month_start,
-    customer_type,
-    SUM(task_count)    AS month_task_count,
-    SUM(invoice_count) AS month_invoice_count,
-    SUM(invoice_total) AS month_invoice_total
-  FROM daily
-  GROUP BY 1, 2
-),
-
-trailing_30 AS (
-  SELECT
-    customer_type,
-    COUNT(*) AS trailing_task_count
-  FROM `pttr-taskdata.ds_aroflo.tasks_complete`
-  WHERE requested_date_parsed
-        BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) AND CURRENT_DATE()
-  GROUP BY 1
-)
-
-SELECT
-  m.month_start,
-  m.customer_type,
-  CASE
-    WHEN m.month_start = DATE_TRUNC(CURRENT_DATE(), MONTH)
-    THEN t.trailing_task_count
-    ELSE m.month_task_count
-  END AS display_task_count,
-  m.month_invoice_count,
-  m.month_invoice_total
-FROM monthly m
-LEFT JOIN trailing_30 t
-  ON m.customer_type = t.customer_type
-ORDER BY m.month_start, m.customer_type;
-
--- View: ds_aroflo.quotes_deduped
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.quotes_deduped` AS
-
-SELECT * EXCEPT(row_num)
-FROM (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY quoteid ORDER BY ingested_at DESC) AS row_num
-  FROM `pttr-taskdata.ds_aroflo.quotes_raw`
-)
-WHERE row_num = 1
-;
-
--- View: ds_aroflo.task_customfields_deduped
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.task_customfields_deduped` AS
-
-SELECT * EXCEPT(row_num)
-FROM (
-  SELECT
-    *,
-    ROW_NUMBER() OVER (PARTITION BY taskid ORDER BY ingested_at DESC) AS row_num
-  FROM `pttr-taskdata.ds_aroflo.task_customfields_raw`
-)
-WHERE row_num = 1
-;
-
--- View: ds_aroflo.task_notes_deduped
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.task_notes_deduped` AS
-
-SELECT * EXCEPT(row_num)
-FROM (
-  SELECT
-    *,
-    ROW_NUMBER() OVER (PARTITION BY noteid ORDER BY ingested_at DESC) AS row_num
-  FROM `pttr-taskdata.ds_aroflo.task_notes_raw`
-)
-WHERE row_num = 1
-;
-
--- View: ds_aroflo.userprofiles_deduped
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_aroflo.userprofiles_deduped` AS
-
-SELECT * EXCEPT(row_num)
-FROM (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY userid ORDER BY ingested_at DESC) AS row_num
-  FROM `pttr-taskdata.ds_aroflo.userprofiles_raw`
-)
-WHERE row_num = 1
-;
-
-
--- View: ds_crm.vw_leads_unified
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_leads_unified` AS
-WITH
-wc_calls AS (
-  SELECT
-    lead_id AS wc_lead_id,
-    phone_norm AS wc_phone,
-    TIMESTAMP(lead_datetime, 'Australia/Sydney') AS wc_timestamp,
-    channel AS wc_channel,
-    lead_source AS wc_source,
-    lead_medium AS wc_medium,
-    lead_campaign AS wc_campaign,
-    lead_keyword AS wc_keyword,
-    profile AS wc_profile,
-    tracking_number AS wc_tracking_number
-  FROM `pttr-taskdata.ds_crm.vw_leads`
-  WHERE channel = 'Call'
-),
-
-inbound_calls AS (
-  SELECT
-    rc.call_id,
-    rc.start_time,
-    rc.norm_caller_phone,
-    rc.caller,
-    rc.callee,
-    rc.callee_name,
-    rc.talk_time,
-    rc.answered,
-    rc.missed,
-    CASE
-      WHEN rc.talk_time IS NOT NULL AND REGEXP_CONTAINS(rc.talk_time, r'^\d{2}:\d{2}:\d{2}$')
-      THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
-         + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
-         + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
-      ELSE 0
-    END AS duration_sec,
-    CASE
-      WHEN EXTRACT(DAYOFWEEK FROM DATETIME(rc.start_time, 'Australia/Sydney')) BETWEEN 2 AND 6
-       AND EXTRACT(HOUR FROM DATETIME(rc.start_time, 'Australia/Sydney')) >= 7
-       AND EXTRACT(HOUR FROM DATETIME(rc.start_time, 'Australia/Sydney')) < 17
-      THEN TRUE ELSE FALSE
-    END AS is_business_hours,
-    CASE rc.callee
-      WHEN '754' THEN 'Paid Search (untracked DID)'
-      WHEN '753' THEN 'Paid Search (untracked DID)'
-      WHEN '717' THEN 'Web DID'
-      WHEN '712' THEN 'Web DID'
-      WHEN '733' THEN 'Web DID'
-      ELSE 'Direct'
-    END AS direct_subtype
-  FROM `pttr-taskdata.ds_crm.raw_calls` rc
-  WHERE rc.direction = 'Incoming'
-    AND rc.callee != '721'
-    AND NOT REGEXP_CONTAINS(rc.callee, r'^3\d{2}$')
-    AND rc.callee NOT LIKE 'ONA%'
-    AND rc.norm_caller_phone IS NOT NULL
-    AND rc.norm_caller_phone != ''
-),
-
-call_with_wc AS (
-  SELECT
-    ic.*,
-    wc.wc_lead_id,
-    wc.wc_channel,
-    wc.wc_source,
-    wc.wc_medium,
-    wc.wc_campaign,
-    wc.wc_keyword,
-    wc.wc_profile,
-    wc.wc_tracking_number,
-    ROW_NUMBER() OVER (
-      PARTITION BY ic.call_id
-      ORDER BY ABS(TIMESTAMP_DIFF(ic.start_time, wc.wc_timestamp, SECOND)) ASC
-    ) AS wc_rank
-  FROM inbound_calls ic
-  LEFT JOIN wc_calls wc
-    ON wc.wc_phone = ic.norm_caller_phone
-    AND wc.wc_timestamp BETWEEN TIMESTAMP_SUB(ic.start_time, INTERVAL 5 SECOND)
-                              AND TIMESTAMP_ADD(ic.start_time, INTERVAL 5 SECOND)
-)
-
-SELECT
-  call_id AS lead_id,
-  'call' AS source_type,
-  norm_caller_phone AS phone,
-  start_time AS lead_timestamp,
-  DATETIME(start_time, 'Australia/Sydney') AS lead_timestamp_sydney,
-  duration_sec,
-  callee AS queue_ext,
-  callee_name AS queue_name,
-  is_business_hours,
-  CASE WHEN wc_lead_id IS NOT NULL THEN 'whatconverts' ELSE 'direct_did' END AS attribution_source,
-  wc_lead_id,
-  COALESCE(wc_channel, 'Direct / Untracked') AS channel,
-  COALESCE(wc_source, 'direct') AS source,
-  COALESCE(wc_medium, '(none)') AS medium,
-  wc_campaign AS campaign,
-  wc_keyword AS keyword,
-  wc_profile AS profile,
-  wc_tracking_number AS tracking_number,
-  CASE WHEN wc_lead_id IS NULL THEN direct_subtype END AS direct_subtype,
-  answered,
-  missed,
-  talk_time
-FROM call_with_wc
-WHERE wc_rank = 1 OR wc_lead_id IS NULL;
-
--- View: ds_crm.vw_opportunities
-CREATE OR REPLACE VIEW `pttr-taskdata.ds_crm.vw_opportunities` AS
-WITH
-real_calls AS (
-  SELECT * FROM `pttr-taskdata.ds_crm.vw_leads_unified` WHERE duration_sec >= 10
-),
-
-with_gap AS (
-  SELECT *,
-    CASE
-      WHEN LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp) IS NULL THEN TRUE
-      WHEN TIMESTAMP_DIFF(lead_timestamp,
-        LAG(lead_timestamp) OVER (PARTITION BY phone ORDER BY lead_timestamp), DAY) > 30 THEN TRUE
-      ELSE FALSE
-    END AS is_opp_start
-  FROM real_calls
-),
-
-with_opp_id AS (
-  SELECT *,
-    SUM(CASE WHEN is_opp_start THEN 1 ELSE 0 END)
-      OVER (PARTITION BY phone ORDER BY lead_timestamp ROWS UNBOUNDED PRECEDING) AS opp_seq
-  FROM with_gap
-),
-
--- One row per call, tagged with first-call attribution via FIRST_VALUE
-tagged AS (
-  SELECT
-    phone,
-    opp_seq,
-    lead_timestamp,
-    FIRST_VALUE(lead_id) OVER w AS opportunity_id,
-    FIRST_VALUE(is_business_hours) OVER w AS is_business_hours,
-    FIRST_VALUE(attribution_source) OVER w AS attribution_source,
-    FIRST_VALUE(channel) OVER w AS channel,
-    FIRST_VALUE(source) OVER w AS source,
-    FIRST_VALUE(medium) OVER w AS medium,
-    FIRST_VALUE(campaign) OVER w AS campaign,
-    FIRST_VALUE(keyword) OVER w AS keyword,
-    FIRST_VALUE(profile) OVER w AS profile,
-    FIRST_VALUE(wc_lead_id) OVER w AS wc_lead_id,
-    FIRST_VALUE(direct_subtype) OVER w AS direct_subtype,
-    FIRST_VALUE(queue_ext) OVER w AS queue_ext,
-    FIRST_VALUE(queue_name) OVER w AS queue_name,
-    duration_sec
-  FROM with_opp_id
-  WINDOW w AS (PARTITION BY phone, opp_seq ORDER BY lead_timestamp)
-),
-
--- Aggregate to one row per opportunity
-agg AS (
-  SELECT
-    opportunity_id,
-    phone,
-    MIN(lead_timestamp) AS opportunity_timestamp,
-    MIN(DATETIME(lead_timestamp, 'Australia/Sydney')) AS opportunity_timestamp_sydney,
-    ANY_VALUE(is_business_hours) AS is_business_hours,
-    ANY_VALUE(attribution_source) AS attribution_source,
-    ANY_VALUE(channel) AS channel,
-    ANY_VALUE(source) AS source,
-    ANY_VALUE(medium) AS medium,
-    ANY_VALUE(campaign) AS campaign,
-    ANY_VALUE(keyword) AS keyword,
-    ANY_VALUE(profile) AS profile,
-    ANY_VALUE(wc_lead_id) AS wc_lead_id,
-    ANY_VALUE(direct_subtype) AS direct_subtype,
-    ANY_VALUE(queue_ext) AS queue_ext,
-    ANY_VALUE(queue_name) AS queue_name,
-    COUNT(*) AS call_count,
-    MAX(duration_sec) AS max_duration_sec
-  FROM tagged
-  GROUP BY opportunity_id, phone
-)
-
-SELECT
-  a.*,
-  EXISTS(
-    SELECT 1 FROM `pttr-taskdata.ds_aroflo.tasks_complete` tc
-    WHERE (tc.norm_client_mobile = a.phone OR tc.id_phone = a.phone)
-      AND tc.requested_date_parsed < DATE(a.opportunity_timestamp_sydney)
-  ) AS is_existing_customer
-FROM agg a;
