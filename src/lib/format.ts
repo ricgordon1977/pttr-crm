@@ -64,6 +64,21 @@ export function formatCurrency(value: any): string {
   return `$${num.toFixed(2)}`
 }
 
+export function formatOpportunityLabel(lead: { lead_id: string; wc_lead_id?: number | null; phone_norm?: string | null; email?: string | null; all_jobnumbers?: string | null }): string {
+  if (lead.wc_lead_id) return `WC-${lead.wc_lead_id}`
+  if (lead.lead_id?.startsWith('J-')) return `JOB-${lead.lead_id.slice(2)}`
+  if (lead.phone_norm) {
+    const last4 = lead.phone_norm.replace(/\D/g, '').slice(-4)
+    return `PH-${last4}`
+  }
+  if (lead.email) {
+    const local = lead.email.split('@')[0]
+    return `EM-${local.slice(0, 8)}`
+  }
+  if (lead.all_jobnumbers) return `JOB-${lead.all_jobnumbers.split(',')[0].trim()}`
+  return lead.lead_id?.slice(0, 10) || '—'
+}
+
 export function channelIcon(channel: string): string {
   switch (channel?.toLowerCase()) {
     case 'inbound call': return '📞↙️'

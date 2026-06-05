@@ -6,7 +6,7 @@ import { FunnelStageBadge, AfterHoursBadge } from '@/components/shared/status-ba
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { useState, useMemo } from 'react'
-import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
+import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from '@/lib/format'
 import {
   UserCheck, PhoneIncoming, FileText, Mail, MessageCircle,
   Droplet, Zap, Search, MapPin, ArrowRight, ExternalLink, Globe,
@@ -120,6 +120,7 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
       accessorKey: 'lead_id',
       header: 'Lead ID',
       enableColumnFilter: false,
+      cell: ({ row }) => <span className="text-[12px] font-mono">{formatOpportunityLabel(row.original)}</span>,
     },
     {
       accessorKey: 'funnel_stage',

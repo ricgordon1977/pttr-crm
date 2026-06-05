@@ -50,19 +50,22 @@ const LOSS_REASON_STAGES = new Set(['Not Booked', 'Booking Cancelled', 'Quote On
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
-function getAutoStage(lead: Lead): { stage: StageName; sub_status: string } {
+function getAutoStage(lead: Lead): { stage: string; sub_status: string } {
+  // Single source of truth: BQ funnel_stage + objective fields
   if (lead.completed) return { stage: 'Booked', sub_status: 'Job Complete' }
   if (lead.booking_status === 'Booked') return { stage: 'Booked', sub_status: 'Job Pending' }
-  if (lead.captured) return { stage: 'Not Captured', sub_status: '' } // captured but not booked → no auto sub-status (human classifies)
-  if (lead.answered) return { stage: 'Not Captured', sub_status: 'Dropped Call' }
-  if (lead.lead_type === 'call') return { stage: 'Not Captured', sub_status: 'Unanswered Call' }
-  // Forms/email without a call
+  if (lead.captured) return { stage: 'Captured', sub_status: '' } // awaiting classification
+  if (lead.answered && !lead.captured) return { stage: 'Not Captured', sub_status: 'Dropped Call' }
+  if (lead.lead_type === 'call' && !lead.answered) return { stage: 'Not Captured', sub_status: 'Unanswered Call' }
+  // Forms/email or unknown
+  if (lead.funnel_stage === 'Captured') return { stage: 'Captured', sub_status: '' }
   return { stage: 'Not Captured', sub_status: '' }
 }
 
 function stageColor(stage: string): string {
   switch (stage) {
     case 'Not Captured': return 'bg-red-100 text-red-800'
+    case 'Captured': return 'bg-blue-100 text-blue-800'
     case 'Not Quotable': return 'bg-orange-100 text-orange-800'
     case 'Not Booked': return 'bg-amber-100 text-amber-800'
     case 'Booked': return 'bg-green-100 text-green-800'
@@ -92,8 +95,8 @@ export function LeadClassification({ lead }: Props) {
 
   const effective = override || { stage: auto.stage, sub_status: auto.sub_status, loss_reason: null, note: null }
   const isOverridden = override !== null
-  // For captured leads with no booking and no override: they need classification
-  const needsClassification = !isOverridden && auto.sub_status === '' && lead.funnel_stage === 'Captured'
+  // Captured leads awaiting human classification
+  const needsClassification = !isOverridden && effective.stage === 'Captured'
 
   useEffect(() => {
     setLoaded(false)
@@ -152,7 +155,7 @@ export function LeadClassification({ lead }: Props) {
         <div className="space-y-3 pl-4">
           {/* Stage pills */}
           <div className="flex flex-wrap gap-1.5">
-            {(Object.keys(STAGES) as StageName[]).map(stage => (
+            {['Not Captured', 'Captured', 'Not Quotable', 'Not Booked', 'Booked'].map(stage => (
               <button
                 key={stage}
                 className={`text-[12px] px-2.5 py-1 rounded-full border transition-colors ${
@@ -161,19 +164,22 @@ export function LeadClassification({ lead }: Props) {
                     : 'bg-white text-muted-foreground border-muted hover:border-foreground/30'
                 }`}
                 onClick={() => {
-                  if (STAGES[stage].auto && stage === auto.stage) {
+                  if (stage === auto.stage) {
                     // Clicking auto stage = clear override
                     if (isOverridden) {
-                      // Delete override by saving auto values
                       save(auto.stage, auto.sub_status)
-                      setOverride(null) // visually clear
+                      setOverride(null)
                     }
+                  } else if (stage === 'Captured') {
+                    // Can't manually set to Captured — it's an auto state
+                    return
                   } else {
                     save(stage, '')
                   }
                 }}
               >
                 {stage}
+                {stage === auto.stage && !isOverridden ? ' ●' : ''}
               </button>
             ))}
           </div>
@@ -181,8 +187,11 @@ export function LeadClassification({ lead }: Props) {
           {/* Sub-status select */}
           <div>
             <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Sub-status</div>
+            {effective.stage === 'Captured' ? (
+              <p className="text-[12px] text-muted-foreground italic">Awaiting classification — select Not Quotable or Not Booked above</p>
+            ) : (
             <div className="flex flex-wrap gap-1">
-              {STAGES[effective.stage as StageName]?.subStatuses.map(ss => {
+              {(STAGES[effective.stage as StageName]?.subStatuses || []).map(ss => {
                 const isAuto = (ss === 'Job Complete' && lead.completed) ||
                   (ss === 'Job Pending' && lead.booking_status === 'Booked' && !lead.completed) ||
                   (ss === 'Dropped Call' && lead.answered && !lead.captured) ||
@@ -202,6 +211,7 @@ export function LeadClassification({ lead }: Props) {
                 )
               })}
             </div>
+            )}
           </div>
 
           {/* Loss reason (only for lost/cancelled) */}

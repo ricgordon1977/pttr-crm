@@ -14,7 +14,7 @@ import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { FunnelStageBadge } from '@/components/shared/status-badge'
 import { LeadClassification } from '@/components/leads/lead-classification'
-import { formatPhone, formatCurrency, formatDate } from '@/lib/format'
+import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from '@/lib/format'
 import { authFetch } from '@/lib/auth/auth-fetch'
 import { ArrowLeft, ChevronDown, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText } from 'lucide-react'
 import type { Lead, LeadInteraction, JobHistory } from '@/types/database'
@@ -369,7 +369,7 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                 <SheetTitle className="text-[20px] font-semibold leading-tight">
                   {lead.contact_name || 'Unknown'}
                   <span className="text-[13px] text-muted-foreground font-normal ml-2">
-                    #{lead.lead_id} &middot; {formatDate(lead.lead_date)}
+                    {formatOpportunityLabel(lead)} &middot; {formatDate(lead.lead_date)}
                   </span>
                 </SheetTitle>
               </SheetHeader>
@@ -480,7 +480,9 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
                     <Skeleton className="h-8 w-3/4" />
                   </div>
                 ) : !interactions?.length ? (
-                  <p className="text-[13px] text-muted-foreground py-2">No interactions recorded.</p>
+                  <p className="text-[13px] text-muted-foreground py-2">
+                    {lead.captured ? 'Captured — interaction detail not yet linked' : 'No interactions recorded.'}
+                  </p>
                 ) : (
                   <table className="w-full text-[13px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
                     <thead>
