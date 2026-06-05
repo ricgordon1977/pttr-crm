@@ -37,105 +37,92 @@ export async function getContactTimeline(contactId: string) {
 // ─── LEADS ───────────────────────────────────────────────────────────────────
 export async function getLeads(limit = 500) {
   return query(`
-    WITH leads AS (
-      SELECT * FROM \`${DS}.vw_leads\`
-      WHERE funnel_stage != 'Repeat'
-      ORDER BY lead_date DESC
-      LIMIT @limit
-    ),
-    -- First interaction operator per lead (single name, longest duration)
-    lead_operators AS (
-      SELECT li.lead_id,
-        FIRST_VALUE(
-          COALESCE(
-            agent.callee_name,
-            CASE WHEN REGEXP_CONTAINS(COALESCE(li.operator_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+$')
-                  AND li.operator_name NOT LIKE '%->%'
-                  AND li.operator_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
-                 THEN li.operator_name END,
-            CASE WHEN REGEXP_CONTAINS(COALESCE(rc.callee_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+$')
-                  AND rc.callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
-                 THEN rc.callee_name END
-          )
-        ) OVER (PARTITION BY li.lead_id ORDER BY li.contact_datetime ASC) AS first_operator,
-        ROW_NUMBER() OVER (PARTITION BY li.lead_id ORDER BY li.contact_datetime ASC) AS rn
-      FROM \`${DS}.lead_interactions\` li
-      LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id
-      LEFT JOIN (
-        SELECT parent_call_id, callee_name,
-               ROW_NUMBER() OVER (
-                 PARTITION BY parent_call_id
-                 ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC
-               ) AS lrn
-        FROM \`${DS}.raw_call_legs\`
-        WHERE answered = 'Answered' AND direction = 'Internal'
-          AND parent_call_id IS NOT NULL
-          AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
-          AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
-          AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
-      ) agent ON rc.call_id = agent.parent_call_id AND agent.lrn = 1
-      WHERE li.contact_type = 'Phone'
-    ),
-    -- Existing client: has jobs BEFORE the lead date
-    existing_clients AS (
-      SELECT DISTINCT vl.lead_id
-      FROM leads vl
-      JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
-        ON (RIGHT(REGEXP_REPLACE(tc.norm_client_mobile, r'[^0-9]', ''), 9) = RIGHT(REGEXP_REPLACE(vl.phone_norm, r'[^0-9]', ''), 9) AND LENGTH(vl.phone_norm) >= 9)
-        OR (LOWER(tc.norm_client_email) = LOWER(vl.email) AND vl.email IS NOT NULL AND vl.email != '')
-        OR (LOWER(tc.id_email) = LOWER(vl.email) AND vl.email IS NOT NULL AND vl.email != '')
-      WHERE SAFE.PARSE_DATE('%Y/%m/%d', tc.requested_date) < vl.lead_date
-        OR tc.requested_date_parsed < vl.lead_date
-    ),
-    -- Job value: invoiced amount from jobs within 30 days after lead
-    job_values AS (
-      SELECT vl.lead_id,
-        MAX(tc.task_invoices_total_ex) AS job_invoice_value
-      FROM leads vl
-      JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
-        ON (RIGHT(REGEXP_REPLACE(tc.norm_client_mobile, r'[^0-9]', ''), 9) = RIGHT(REGEXP_REPLACE(vl.phone_norm, r'[^0-9]', ''), 9) AND LENGTH(vl.phone_norm) >= 9)
-        OR (LOWER(tc.norm_client_email) = LOWER(vl.email) AND vl.email IS NOT NULL AND vl.email != '')
-        OR (LOWER(tc.id_email) = LOWER(vl.email) AND vl.email IS NOT NULL AND vl.email != '')
-      WHERE (SAFE.PARSE_DATE('%Y/%m/%d', tc.requested_date) BETWEEN vl.lead_date AND DATE_ADD(vl.lead_date, INTERVAL 30 DAY))
-         OR (tc.requested_date_parsed BETWEEN vl.lead_date AND DATE_ADD(vl.lead_date, INTERVAL 30 DAY))
-      GROUP BY vl.lead_id
-    )
-    SELECT l.* EXCEPT(contact_name),
+    SELECT
+      opportunity_id AS lead_id,
+      DATE(created_at_sydney) AS lead_date,
+      created_at_sydney AS lead_datetime,
+      channel,
       CASE
-        WHEN UPPER(TRIM(COALESCE(l.contact_name, alc.caller_name, ''))) IN ('AUSTRALIA', 'INTERNATIONAL', 'NEW ZEALAND', 'UNITED STATES', 'UNITED KINGDOM', '') THEN NULL
-        ELSE COALESCE(NULLIF(TRIM(l.contact_name), ''), INITCAP(NULLIF(TRIM(alc.caller_name), '')))
-      END AS contact_name,
-      lo.first_operator AS operator,
-      ec.lead_id IS NOT NULL AS is_existing_client,
-      COALESCE(jv.job_invoice_value, l.sales_value) AS job_value
-    FROM leads l
-    LEFT JOIN lead_operators lo ON l.lead_id = lo.lead_id AND lo.rn = 1
-    LEFT JOIN existing_clients ec ON l.lead_id = ec.lead_id
-    LEFT JOIN job_values jv ON l.lead_id = jv.lead_id
-    LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_classified\` alc ON l.lead_id = alc.lead_id
-    ORDER BY l.lead_date DESC
+        WHEN service = 'PTTR' THEN 'Plumber to the Rescue'
+        WHEN service = 'ETTR' THEN 'Electrician to the Rescue'
+        ELSE service
+      END AS profile,
+      contact_name,
+      phone AS phone_norm,
+      email,
+      suburb,
+      source AS lead_source,
+      medium AS lead_medium,
+      campaign_name AS lead_campaign,
+      keyword AS lead_keyword,
+      funnel_stage,
+      CAST(NULL AS STRING) AS dnp_reason,
+      CASE WHEN is_after_hours THEN 'After Hours' ELSE 'Business Hours' END AS business_hours_flag,
+      call_count,
+      form_count,
+      operator,
+      is_existing_customer AS is_existing_client,
+      job_value,
+      wc_lead_id,
+      booking_status,
+      completed,
+      answered,
+      captured,
+      service,
+      lead_type,
+      campaign_type,
+      all_jobnumbers,
+      job_count
+    FROM \`${DS}.vw_lead_enriched\`
+    ORDER BY created_at_sydney DESC
+    LIMIT @limit
   `, { limit })
 }
 
 export async function getLeadDetail(leadId: string) {
-  // lead_id from WhatConverts is numeric — try INT64 first, fall back to string
-  const numericId = Number(leadId)
-  const isNumeric = !isNaN(numericId) && String(numericId) === leadId
-
-  if (isNumeric) {
-    const rows = await query(`
-      SELECT * FROM \`${DS}.vw_lead_detail\`
-      WHERE lead_id = @leadId
-      ORDER BY interaction_datetime DESC
-    `, { leadId: numericId })
-    if (rows.length > 0) return rows
-  }
-
-  // Fall back to string comparison
+  // leadId is now opportunity_id (string, e.g. "J-141428" or "G-abc123...")
   return query(`
-    SELECT * FROM \`${DS}.vw_lead_detail\`
-    WHERE CAST(lead_id AS STRING) = @leadId
-    ORDER BY interaction_datetime DESC
+    SELECT
+      opportunity_id AS lead_id,
+      DATE(created_at_sydney) AS lead_date,
+      created_at_sydney AS lead_datetime,
+      channel,
+      CASE
+        WHEN service = 'PTTR' THEN 'Plumber to the Rescue'
+        WHEN service = 'ETTR' THEN 'Electrician to the Rescue'
+        ELSE service
+      END AS profile,
+      contact_name,
+      phone AS phone_norm,
+      email,
+      suburb,
+      source AS lead_source,
+      medium AS lead_medium,
+      campaign_name AS lead_campaign,
+      keyword AS lead_keyword,
+      funnel_stage,
+      CAST(NULL AS STRING) AS dnp_reason,
+      CASE WHEN is_after_hours THEN 'After Hours' ELSE 'Business Hours' END AS business_hours_flag,
+      call_count,
+      form_count,
+      operator,
+      is_existing_customer AS is_existing_client,
+      job_value,
+      wc_lead_id,
+      booking_status,
+      completed,
+      answered,
+      captured,
+      service,
+      lead_type,
+      campaign_type,
+      all_jobnumbers,
+      job_count,
+      matched_phones,
+      matched_emails,
+      is_no_inbound_enquiry
+    FROM \`${DS}.vw_lead_enriched\`
+    WHERE opportunity_id = @leadId
   `, { leadId })
 }
 
@@ -284,50 +271,46 @@ export async function getEmailDetail(leadId: number, dt: string) {
 }
 
 // ─── JOB HISTORY ────────────────────────────────────────────────────────────
-export async function getJobHistory(phoneNorm: string, email: string) {
-  // Strip phone to last 9 digits for flexible matching across formats
-  // E.164 +61437694614 → 437694614, local 0437694614 → 437694614
-  const phoneDigits = (phoneNorm || '').replace(/\D/g, '')
-  const phoneLast9 = phoneDigits.length >= 9 ? phoneDigits.slice(-9) : ''
-
-  // Union completed jobs (tasks_complete) with booked/in-progress jobs (tasks_deduped)
-  // tasks_deduped matches via client_clientid → clients_deduped phone/email
-  // LEFT JOIN task_customfields_deduped for primary_work_type
+export async function getJobHistory(opportunityId: string) {
+  // Use precomputed all_jobnumbers from the opportunity cluster
   return query(`
-    WITH matched_clients AS (
-      SELECT clientid
-      FROM \`pttr-taskdata.ds_aroflo.clients_deduped\`
-      WHERE (RIGHT(REGEXP_REPLACE(mobile, r'[^0-9]', ''), 9) = @phoneLast9 AND @phoneLast9 != '')
-         OR (RIGHT(REGEXP_REPLACE(phone, r'[^0-9]', ''), 9) = @phoneLast9 AND @phoneLast9 != '')
-         OR (LOWER(email) = LOWER(@email) AND @email != '')
+    WITH opp AS (
+      SELECT all_jobnumbers, matched_phones
+      FROM \`${DS}.opportunities\`
+      WHERE opportunity_id = @opportunityId
     ),
-    completed_jobs AS (
-      SELECT tc.jobnumber, tc.requested_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
-             COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
-             COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\s*(.+)$')) AS job_suburb,
-             td.description,
-             SAFE_CAST(td.quote_totalex AS NUMERIC) AS quote_totalex
-      FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
-      LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
-      WHERE (tc.norm_client_phone = @phoneNorm AND @phoneNorm != '')
-         OR (tc.norm_client_mobile = @phoneNorm AND @phoneNorm != '')
-         OR (tc.id_phone = @phoneNorm AND @phoneNorm != '')
-         OR (RIGHT(REGEXP_REPLACE(tc.id_phone, r'[^0-9]', ''), 9) = @phoneLast9 AND @phoneLast9 != '')
-         OR (RIGHT(REGEXP_REPLACE(tc.norm_client_mobile, r'[^0-9]', ''), 9) = @phoneLast9 AND @phoneLast9 != '')
-         OR (LOWER(tc.norm_client_email) = LOWER(@email) AND @email != '')
-         OR (LOWER(tc.id_email) = LOWER(@email) AND @email != '')
+    job_numbers AS (
+      SELECT TRIM(jn) AS jobnumber FROM opp, UNNEST(SPLIT(opp.all_jobnumbers, ',')) jn
+      WHERE opp.all_jobnumbers IS NOT NULL
     ),
+    -- Also find active jobs via phone matching (not yet in opportunities)
     active_jobs AS (
       SELECT td.jobnumber, td.requestdate AS requested_date, td.tasktasktype_tasktype AS task_type,
              td.status AS display_status, SAFE_CAST(td.quote_totalex AS NUMERIC) AS task_invoices_total_ex,
              td.client_clientname AS client_name, 'active' AS job_source,
              COALESCE(NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
-             COALESCE(NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\s*(.+)$')) AS job_suburb,
+             COALESCE(NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\\s*(.+)$')) AS job_suburb,
              td.description,
              SAFE_CAST(td.quote_totalex AS NUMERIC) AS quote_totalex
       FROM \`pttr-taskdata.ds_aroflo.tasks_deduped\` td
-      JOIN matched_clients mc ON td.client_clientid = mc.clientid
-      WHERE td.jobnumber NOT IN (SELECT jobnumber FROM completed_jobs)
+      WHERE td.status NOT IN ('Archived', 'Completed')
+        AND td.jobnumber NOT IN (SELECT jobnumber FROM job_numbers)
+        AND EXISTS (
+          SELECT 1 FROM opp
+          WHERE opp.matched_phones LIKE CONCAT('%', COALESCE(
+            NULLIF(td.client_clientid, ''), 'NOMATCH'
+          ), '%')
+        )
+    ),
+    completed_jobs AS (
+      SELECT tc.jobnumber, tc.requested_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
+             COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
+             COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\\s*(.+)$')) AS job_suburb,
+             td.description,
+             SAFE_CAST(td.quote_totalex AS NUMERIC) AS quote_totalex
+      FROM job_numbers jn
+      JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc ON jn.jobnumber = tc.jobnumber
+      LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
     ),
     all_jobs AS (
       SELECT * FROM completed_jobs
@@ -346,7 +329,7 @@ export async function getJobHistory(phoneNorm: string, email: string) {
     LEFT JOIN task_notes_agg tn ON aj.jobnumber = tn.jobnumber
     ORDER BY aj.requested_date DESC
     LIMIT 50
-  `, { phoneNorm: phoneNorm || '', phoneLast9, email: email || '' })
+  `, { opportunityId })
 }
 
 // ─── JOBS ───────────────────────────────────────────────────────────────────
@@ -408,8 +391,8 @@ export async function getJobInteractions(jobId: string) {
         WHEN li.contact_type = 'Phone' THEN LEFT(COALESCE(li.contact_content, ''), 120)
         ELSE LEFT(COALESCE(li.contact_subject, li.contact_content, ''), 120)
       END AS summary
-    FROM \`${DS}.unified_leads\` ul
-    JOIN \`${DS}.lead_interactions\` li ON ul.lead_id = li.lead_id
+    FROM \`${DS}.opportunities\` opp
+    JOIN \`${DS}.lead_interactions\` li ON li.lead_id = opp.wc_lead_id
     LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id AND li.contact_type = 'Phone'
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
@@ -427,7 +410,7 @@ export async function getJobInteractions(jobId: string) {
       WHERE operator_name IS NOT NULL AND operator_name != ''
       GROUP BY call_id
     ) ro ON li.call_id = ro.call_id AND li.contact_type = 'Phone'
-    WHERE REGEXP_CONTAINS(CONCAT(',', REPLACE(ul.job_numbers, ' ', ''), ','), CONCAT(',', @jobId, ','))
+    WHERE REGEXP_CONTAINS(CONCAT(',', REPLACE(COALESCE(opp.all_jobnumbers, ''), ' ', ''), ','), CONCAT(',', @jobId, ','))
     ORDER BY li.contact_datetime_sydney DESC
   `, { jobId })
 }
@@ -568,12 +551,11 @@ export async function getDashboardStats() {
   return query(`
     SELECT
       COUNT(*) AS total_leads,
-      COUNTIF(is_booking) AS bookings,
-      COUNTIF(is_converted_job) AS conversions,
-      ROUND(SAFE_DIVIDE(COUNTIF(is_booking), COUNT(*)) * 100, 1) AS booking_rate,
-      SUM(sales_value) AS revenue
-    FROM \`${DS}.vw_leads\`
-    WHERE lead_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
-    AND funnel_stage != 'Repeat'
+      COUNTIF(booking_status = 'Booked') AS bookings,
+      COUNTIF(completed = TRUE) AS conversions,
+      ROUND(SAFE_DIVIDE(COUNTIF(booking_status = 'Booked'), COUNT(*)) * 100, 1) AS booking_rate,
+      SUM(CASE WHEN completed = TRUE THEN COALESCE(job_value, 0) ELSE 0 END) AS revenue
+    FROM \`${DS}.vw_lead_enriched\`
+    WHERE DATE(created_at_sydney) >= DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY)
   `)
 }

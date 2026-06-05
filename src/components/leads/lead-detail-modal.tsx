@@ -172,12 +172,8 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
     }
 
     async function fetchJobHistory() {
-      if (!lead!.phone_norm && !lead!.email) return
       setJobHistoryLoading(true)
-      const params = new URLSearchParams()
-      if (lead!.phone_norm) params.set('phone', lead!.phone_norm)
-      if (lead!.email) params.set('email', lead!.email)
-      const res = await authFetch(`/api/leads/${lead!.lead_id}/job-history?${params}`)
+      const res = await authFetch(`/api/leads/${lead!.lead_id}/job-history`)
       const raw = await res.json()
       setJobHistory(Array.isArray(raw) ? raw : [])
       setJobHistoryLoading(false)
@@ -374,8 +370,8 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
               <div className="flex items-center gap-3 mt-3 flex-wrap">
                 {lead.funnel_stage && <FunnelStageBadge stage={lead.funnel_stage} />}
                 {lead.channel && <ChannelBadge channel={lead.channel} />}
-                {lead.sales_value != null && lead.sales_value > 0 && (
-                  <span className="text-[13px] font-medium">{formatCurrency(lead.sales_value)}</span>
+                {lead.job_value != null && lead.job_value > 0 && (
+                  <span className="text-[13px] font-medium">{formatCurrency(lead.job_value)}</span>
                 )}
                 {speedToLead != null && (
                   <span className="text-[13px] text-muted-foreground">
@@ -460,17 +456,6 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
               {hasDnp(lead.dnp_reason) && (
                 <div className="px-5 py-2 border-b text-[13px]">
                   <span className="font-medium text-red-600">Sub-Status:</span> {lead.dnp_reason}
-                  {lead.dnp_detail && lead.dnp_detail !== '--' && (
-                    <span className="text-muted-foreground"> — {lead.dnp_detail}</span>
-                  )}
-                </div>
-              )}
-
-              {/* Notes */}
-              {lead.notes && (
-                <div className="px-5 py-2 border-b text-[13px]">
-                  <span className="font-medium">Notes:</span>
-                  <span className="ml-1 text-muted-foreground">{lead.notes}</span>
                 </div>
               )}
 

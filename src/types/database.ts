@@ -45,39 +45,37 @@ export interface Contact {
 }
 
 export interface Lead {
-  lead_id: string
+  lead_id: string           // opportunity_id
   lead_date: string
   lead_datetime: string
   channel: string
   profile: string
   contact_name: string
-  phone_raw: string
   phone_norm: string
   email: string
   suburb: string
   lead_source: string
   lead_medium: string
   lead_campaign: string
-  lead_class: string
-  lead_status: string
-  dnp_reason: string
-  dnp_detail: string
-  service_type: string
+  lead_keyword: string
+  dnp_reason: string | null
   funnel_stage: string
-  quotable: boolean
-  is_booking: boolean
-  is_converted_job: boolean
   business_hours_flag: string
-  call_duration_seconds: number
-  call_transcription: string
-  sales_value: number
   call_count: number
-  email_count: number
-  has_jobs: boolean
-  notes: string
+  form_count: number
   operator: string | null
   is_existing_client: boolean
   job_value: number | null
+  wc_lead_id: number | null
+  booking_status: string
+  completed: boolean | null
+  answered: boolean | null
+  captured: boolean | null
+  service: string
+  lead_type: string
+  campaign_type: string | null
+  all_jobnumbers: string | null
+  job_count: number
 }
 
 export interface LeadInteraction {

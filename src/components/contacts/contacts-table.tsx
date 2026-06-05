@@ -72,7 +72,7 @@ export function ContactsTable({ contacts, onSelectContact }: ContactsTableProps)
 
   const filterControls = (
     <div className="flex items-center gap-4">
-      <Select value={typeFilter} onValueChange={setTypeFilter}>
+      <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v ?? '')}>
         <SelectTrigger className="w-[180px]">
           <SelectValue placeholder="Contact type" />
         </SelectTrigger>

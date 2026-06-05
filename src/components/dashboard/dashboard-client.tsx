@@ -41,13 +41,13 @@ export function DashboardClient({ stats, leads }: DashboardClientProps) {
   const weeklyRevenue = useMemo(() => {
     const weeks: Record<string, number> = {}
     leads.forEach((l) => {
-      if (!l.lead_date || !l.sales_value) return
+      if (!l.lead_date || !l.job_value) return
       const d = safeDate(l.lead_date)
       if (!d) return
       const weekStart = new Date(d)
       weekStart.setDate(d.getDate() - d.getDay())
       const key = weekStart.toISOString().slice(0, 10)
-      weeks[key] = (weeks[key] || 0) + l.sales_value
+      weeks[key] = (weeks[key] || 0) + l.job_value
     })
     return Object.entries(weeks)
       .sort(([a], [b]) => a.localeCompare(b))
@@ -129,7 +129,7 @@ export function DashboardClient({ stats, leads }: DashboardClientProps) {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="week" tick={{ fontSize: 11 }} />
               <YAxis />
-              <Tooltip formatter={(value: number) => formatCurrency(value)} />
+              <Tooltip formatter={(value: unknown) => formatCurrency(value as number)} />
               <Line type="monotone" dataKey="revenue" stroke="#22c55e" strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>

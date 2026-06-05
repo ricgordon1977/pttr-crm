@@ -45,6 +45,9 @@ SELECT
   o.is_existing_customer,
   o.is_no_inbound_enquiry,
 
+  -- Suburb (from WC city field)
+  COALESCE(NULLIF(TRIM(wc.city), ''), NULLIF(TRIM(tc.address_suburb), '')) AS suburb,
+
   -- === Attribution ===
   o.channel,
   o.source,
@@ -66,6 +69,16 @@ SELECT
   CASE WHEN o.call_count > 0 THEN o.has_answered_call AND o.max_duration_sec >= 20 ELSE NULL END AS captured,
   CAST(NULL AS FLOAT64) AS first_response_minutes,
 
+  -- Operator (first answering agent: call_legs → recordings → callee_name fallback)
+  COALESCE(
+    first_agent.callee_name,
+    first_rec.operator_name,
+    CASE WHEN REGEXP_CONTAINS(COALESCE(first_rc.callee_name, ''), r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+      AND first_rc.callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue',
+        'Strata Account', 'Plumbing Rescue', 'Electrician Rescue', 'Plumber and Electrician to the Rescue')
+      THEN first_rc.callee_name END
+  ) AS operator,
+
   -- === Outcome (rules-based) ===
   o.jobnumber AS job_numbers,
   o.all_jobnumbers,
@@ -82,6 +95,18 @@ SELECT
     WHEN o.jobnumber IS NOT NULL THEN FALSE
     ELSE NULL
   END AS completed,
+
+  -- === Objective funnel stage ===
+  CASE
+    WHEN o.job_count > 1 AND COALESCE(all_jobs.any_completed, FALSE) THEN 'Paid Job'
+    WHEN o.job_count <= 1 AND tc.status = 'Archived' AND tc.job_status = 'Completed'
+      AND SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) > 0 THEN 'Paid Job'
+    WHEN o.jobnumber IS NOT NULL THEN 'Booked'
+    WHEN o.call_count > 0 AND o.has_answered_call AND o.max_duration_sec >= 20 THEN 'Captured'
+    WHEN o.call_count > 0 OR o.form_count > 0 THEN 'Not Captured'
+    WHEN o.opp_type = 'no_inbound' AND o.jobnumber IS NOT NULL THEN 'Booked'
+    ELSE 'Not Captured'
+  END AS funnel_stage,
 
   -- === Classification (all NULL) ===
   CAST(NULL AS STRING) AS disposition,
@@ -113,4 +138,28 @@ LEFT JOIN (
   JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc2 ON TRIM(jn) = tc2.jobnumber
   WHERE o2.job_count > 1
   GROUP BY o2.opportunity_id
-) all_jobs ON o.opportunity_id = all_jobs.opportunity_id;
+) all_jobs ON o.opportunity_id = all_jobs.opportunity_id
+-- Operator: first answering agent on the opportunity's earliest call
+-- Join raw_calls by phone + timestamp (opportunity_timestamp = first call's start_time for call-first opps)
+LEFT JOIN `pttr-taskdata.ds_crm.raw_calls` first_rc
+  ON first_rc.norm_caller_phone = o.phone
+  AND ABS(TIMESTAMP_DIFF(first_rc.start_time, o.opportunity_timestamp, SECOND)) < 2
+  AND first_rc.direction = 'Incoming'
+LEFT JOIN (
+  SELECT parent_call_id,
+    ARRAY_AGG(callee_name ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC LIMIT 1)[OFFSET(0)] AS callee_name
+  FROM `pttr-taskdata.ds_crm.raw_call_legs`
+  WHERE answered = 'Answered' AND direction = 'Internal'
+    AND parent_call_id IS NOT NULL
+    AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
+    AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+    AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
+  GROUP BY parent_call_id
+) first_agent ON first_rc.call_id = first_agent.parent_call_id
+LEFT JOIN (
+  SELECT call_id,
+    ARRAY_AGG(operator_name ORDER BY operator_name LIMIT 1)[OFFSET(0)] AS operator_name
+  FROM `pttr-taskdata.ds_crm.raw_recordings`
+  WHERE operator_name IS NOT NULL AND operator_name != ''
+  GROUP BY call_id
+) first_rec ON first_rc.call_id = first_rec.call_id;

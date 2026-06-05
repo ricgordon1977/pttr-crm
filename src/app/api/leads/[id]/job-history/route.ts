@@ -7,17 +7,14 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try { await verifyAuth(request) } catch (e) { return e as Response }
-  await params
-  const { searchParams } = request.nextUrl
-  const phone = searchParams.get('phone') || ''
-  const email = searchParams.get('email') || ''
+  const { id } = await params
 
-  if (!phone && !email) {
+  if (!id) {
     return Response.json([])
   }
 
   try {
-    const rows = await getJobHistory(phone, email)
+    const rows = await getJobHistory(id)
     return Response.json(rows)
   } catch (error) {
     console.error('Job history error:', error)
