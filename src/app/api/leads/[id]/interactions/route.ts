@@ -145,7 +145,11 @@ export async function GET(
     `, {
       wcLeadId: wc_lead_id || null,
       phones,
-      oppTimestamp: oppData.opportunity_timestamp,
+      oppTimestamp: String(oppData.opportunity_timestamp),
+    }, {
+      wcLeadId: 'INT64',
+      phones: { type: 'ARRAY', arrayType: { type: 'STRING' } },
+      oppTimestamp: 'TIMESTAMP',
     })
 
     return Response.json(JSON.parse(JSON.stringify(rows)))

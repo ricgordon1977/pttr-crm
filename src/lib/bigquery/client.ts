@@ -31,9 +31,15 @@ function flattenRow(row: any): any {
   return out
 }
 
-export async function query<T>(sql: string, params?: Record<string, unknown>): Promise<T[]> {
-  const options: { query: string; params?: Record<string, unknown> } = { query: sql }
+export async function query<T>(
+  sql: string,
+  params?: Record<string, unknown>,
+  types?: Record<string, string | { type: string; arrayType?: { type: string } }>
+): Promise<T[]> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const options: any = { query: sql }
   if (params) options.params = params
+  if (types) options.types = types
   const [rows] = await bigquery.query(options)
   return rows.map(flattenRow) as T[]
 }
