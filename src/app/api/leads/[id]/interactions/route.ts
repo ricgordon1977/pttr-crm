@@ -127,8 +127,8 @@ export async function GET(
         ) rec ON rc.call_id = rec.call_id
         WHERE rc.norm_caller_phone IN UNNEST(@phones)
           AND rc.start_time BETWEEN
-            TIMESTAMP_SUB(@oppTimestamp, INTERVAL 300 SECOND)
-            AND TIMESTAMP_ADD(@oppTimestamp, INTERVAL 2592000 SECOND)
+            TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
+            AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
       ),
       -- Combine + dedupe by call_id (prefer WC-linked if both exist)
       combined AS (
@@ -148,8 +148,7 @@ export async function GET(
       oppTimestamp: String(oppData.opportunity_timestamp),
     }, {
       wcLeadId: 'INT64',
-      phones: { type: 'ARRAY', arrayType: { type: 'STRING' } },
-      oppTimestamp: 'TIMESTAMP',
+      phones: ['STRING'],
     })
 
     return Response.json(JSON.parse(JSON.stringify(rows)))

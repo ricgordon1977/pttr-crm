@@ -34,7 +34,8 @@ function flattenRow(row: any): any {
 export async function query<T>(
   sql: string,
   params?: Record<string, unknown>,
-  types?: Record<string, string | { type: string; arrayType?: { type: string } }>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  types?: Record<string, any>
 ): Promise<T[]> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const options: any = { query: sql }
