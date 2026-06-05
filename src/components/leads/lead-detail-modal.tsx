@@ -105,26 +105,7 @@ function hasDnp(reason: string | null | undefined): boolean {
   return r !== '' && r !== '--' && r !== '-' && r !== 'select one'
 }
 
-/** Filter interactions to within 30 days of the lead creation.
- *  Uses a 5-minute buffer before the lead time because the call that
- *  created the lead starts slightly before the lead record is created.
- *  Both lead_datetime and interaction_datetime are Sydney local (DATETIME),
- *  so we compare them as plain strings to avoid timezone conversion issues. */
-function filterRecentInteractions(interactions: LeadInteraction[]): LeadInteraction[] {
-  if (!Array.isArray(interactions) || interactions.length === 0) return []
-  const leadDt = interactions[0]?.lead_datetime
-  if (!leadDt) return interactions
-  const leadDate = new Date(leadDt)
-  if (isNaN(leadDate.getTime())) return interactions
-  // 5 minutes before lead creation to catch the triggering call
-  const windowStart = new Date(leadDate.getTime() - 5 * 60 * 1000)
-  // 30 days after
-  const windowEnd = new Date(leadDate.getTime() + 30 * 24 * 60 * 60 * 1000)
-  return interactions.filter((ix) => {
-    const ixDate = new Date(ix.interaction_datetime)
-    return !isNaN(ixDate.getTime()) && ixDate >= windowStart && ixDate <= windowEnd
-  })
-}
+// Removed: filterRecentInteractions — the opportunity cluster IS the window
 
 export function LeadDetailModal({ lead, open, onOpenChange, onClassify }: LeadDetailModalProps) {
   const [interactions, setInteractions] = useState<LeadInteraction[]>([])
@@ -162,17 +143,12 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify }: LeadDe
       return
     }
 
-    async function fetchDetail() {
+    async function fetchInteractions() {
       setLoading(true)
-      const res = await authFetch(`/api/leads/${lead!.lead_id}/detail`)
+      const res = await authFetch(`/api/leads/${lead!.lead_id}/interactions`)
       const raw = await res.json()
       const data: LeadInteraction[] = Array.isArray(raw) ? raw : []
-
-      if (data.length > 0) {
-        setSpeedToLead(data[0].speed_to_lead_minutes)
-      }
-
-      setInteractions(filterRecentInteractions(data))
+      setInteractions(data)
       setLoading(false)
     }
 
@@ -192,7 +168,7 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify }: LeadDe
       setNotesLoading(false)
     }
 
-    fetchDetail()
+    fetchInteractions()
     fetchJobHistory()
     fetchNotes()
   }, [lead, open])
@@ -251,8 +227,9 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify }: LeadDe
     setRecordingError(false)
 
     try {
+      const callId = ix.call_id || ix.interaction_id
       const res = await authFetch(
-        `/api/leads/${lead.lead_id}/interaction?type=${type}&datetime=${encodeURIComponent(ix.interaction_datetime)}`
+        `/api/leads/${lead.lead_id}/interaction?type=${type}&call_id=${encodeURIComponent(callId)}&datetime=${encodeURIComponent(ix.interaction_datetime)}`
       )
       if (res.ok) {
         const data = await res.json()

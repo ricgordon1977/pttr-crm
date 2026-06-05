@@ -83,8 +83,8 @@ export interface Lead {
 }
 
 export interface LeadInteraction {
-  lead_id: string
-  lead_datetime: string
+  interaction_id: string
+  lead_id: string | null
   interaction_date: string
   interaction_time: string
   interaction_datetime: string
@@ -92,12 +92,7 @@ export interface LeadInteraction {
   interaction_operator: string
   interaction_summary: string
   interaction_duration_seconds: number
-  speed_to_lead_minutes: number | null
-  job_number: string | null
-  job_type: string | null
-  job_status: string | null
-  job_value: number | null
-  job_completed_date: string | null
+  call_id: string | null
 }
 
 export interface JobHistory {
