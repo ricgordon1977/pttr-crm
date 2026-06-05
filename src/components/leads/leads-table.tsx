@@ -10,7 +10,7 @@ import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from 
 import {
   UserCheck, PhoneIncoming, FileText, Mail,
   Droplet, Zap, Search, MapPin, ArrowRight, ExternalLink, Globe,
-  Sprout, DollarSign, Users, Minus, Link,
+  Sprout, DollarSign, Users, Minus, Link, CircleDot,
 } from 'lucide-react'
 import type { Lead } from '@/types/database'
 
@@ -53,21 +53,16 @@ function SourceIcon({ source }: { source: string }) {
   if (s === 'gmb') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><MapPin className="h-3.5 w-3.5" />{source}</span>
   if (s === '(direct)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
 
-  // Search engines
   if (['bing', 'yahoo', 'duckduckgo.com', 'ecosia.org', 'search.brave.com', 'perplexity'].includes(s)) {
     return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />{source}</span>
   }
-  // AI
   if (s.includes('chatgpt')) return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Globe className="h-3.5 w-3.5" />{source}</span>
-  // Own websites
   if (s.includes('plumbertotherescue') || s.includes('electriciantotherescue') || s.includes('lp.')) {
     return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Link className="h-3.5 w-3.5" />{source}</span>
   }
-  // Social / referral sites
   if (s.includes('facebook') || s.includes('houzz') || s.includes('yelp') || s.includes('yellowpages') || s.includes('localsearch') || s.includes('masterplumbers')) {
     return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><ExternalLink className="h-3.5 w-3.5" />{source}</span>
   }
-  // Fallback
   return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Globe className="h-3.5 w-3.5" />{source}</span>
 }
 
@@ -79,16 +74,18 @@ function MediumIcon({ medium }: { medium: string }) {
   if (m === 'cpc') return <span className="inline-flex items-center gap-1 text-[13px] text-red-600"><DollarSign className="h-3.5 w-3.5" />{medium}</span>
   if (m === 'referral') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Users className="h-3.5 w-3.5" />{medium}</span>
   if (m === '(none)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Minus className="h-3.5 w-3.5" />None</span>
-  // Fallback
   return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Globe className="h-3.5 w-3.5" />{medium}</span>
 }
 
 interface LeadsTableProps {
   leads: Lead[]
   onViewLead: (lead: Lead) => void
+  needsReviewFilter: boolean
+  onNeedsReviewFilterChange: (on: boolean) => void
+  filteredLeads: Lead[]  // the filtered+sorted list for navigation
 }
 
-export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
+export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReviewFilterChange, filteredLeads }: LeadsTableProps) {
   const [search, setSearch] = useState('')
 
   const columns: ColumnDef<Lead, unknown>[] = [
@@ -105,6 +102,14 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
           View
         </Badge>
       ),
+    },
+    {
+      id: 'needs_review',
+      header: '',
+      enableColumnFilter: false,
+      cell: ({ row }) => !row.original.is_overridden
+        ? <span title="Needs review"><CircleDot className="h-3 w-3 text-amber-500" /></span>
+        : null,
     },
     {
       accessorKey: 'lead_date',
@@ -189,16 +194,24 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
     },
   ]
 
-  const filtered = useMemo(() => {
-    if (!search) return leads
-    const term = search.toLowerCase()
-    return leads.filter((l) =>
-      l.contact_name?.toLowerCase().includes(term) ||
-      l.phone_norm?.includes(term) ||
-      l.suburb?.toLowerCase().includes(term) ||
-      l.lead_source?.toLowerCase().includes(term)
-    )
-  }, [leads, search])
+  const searchFiltered = useMemo(() => {
+    let result = leads
+    if (needsReviewFilter) {
+      result = result.filter(l => !l.is_overridden)
+    }
+    if (search) {
+      const term = search.toLowerCase()
+      result = result.filter((l) =>
+        l.contact_name?.toLowerCase().includes(term) ||
+        l.phone_norm?.includes(term) ||
+        l.suburb?.toLowerCase().includes(term) ||
+        l.lead_source?.toLowerCase().includes(term)
+      )
+    }
+    return result
+  }, [leads, search, needsReviewFilter])
+
+  const needsReviewCount = useMemo(() => leads.filter(l => !l.is_overridden).length, [leads])
 
   const filterControls = (
     <div className="flex items-center gap-4">
@@ -208,15 +221,29 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
         onChange={(e) => setSearch(e.target.value)}
         className="max-w-sm"
       />
+      <button
+        className={`inline-flex items-center gap-1.5 text-[13px] px-3 py-1.5 rounded-md border transition-colors ${
+          needsReviewFilter
+            ? 'bg-amber-100 text-amber-800 border-amber-300 font-medium'
+            : 'bg-white text-muted-foreground border-muted hover:border-foreground/30'
+        }`}
+        onClick={() => onNeedsReviewFilterChange(!needsReviewFilter)}
+      >
+        <CircleDot className="h-3.5 w-3.5" />
+        Needs Review
+        <span className="text-[11px] bg-amber-200/60 text-amber-900 rounded-full px-1.5 py-0 font-medium">
+          {needsReviewCount}
+        </span>
+      </button>
     </div>
   )
 
   return (
     <DataTable
       columns={columns}
-      data={filtered}
+      data={searchFiltered}
       filterControls={filterControls}
-      frozenColumns={6}
+      frozenColumns={7}
       enableColumnFilters
     />
   )

@@ -16,7 +16,7 @@ import { FunnelStageBadge } from '@/components/shared/status-badge'
 import { LeadClassification } from '@/components/leads/lead-classification'
 import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from '@/lib/format'
 import { authFetch } from '@/lib/auth/auth-fetch'
-import { ArrowLeft, ChevronDown, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText } from 'lucide-react'
 import type { Lead, LeadInteraction, JobHistory } from '@/types/database'
 
 interface InteractionDetail {
@@ -40,6 +40,10 @@ interface LeadDetailModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onClassify?: (opportunityId: string, stage: string, subStatus: string) => void
+  onNavigate?: (direction: 'prev' | 'next') => void
+  canPrev?: boolean
+  canNext?: boolean
+  position?: string
 }
 
 function interactionTypeKey(type: string): 'call' | 'email' | null {
@@ -107,7 +111,7 @@ function hasDnp(reason: string | null | undefined): boolean {
 
 // Removed: filterRecentInteractions — the opportunity cluster IS the window
 
-export function LeadDetailModal({ lead, open, onOpenChange, onClassify }: LeadDetailModalProps) {
+export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNavigate, canPrev, canNext, position }: LeadDetailModalProps) {
   const [interactions, setInteractions] = useState<LeadInteraction[]>([])
   const [loading, setLoading] = useState(false)
   const [noteText, setNoteText] = useState('')
@@ -343,6 +347,33 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify }: LeadDe
           <div className="flex flex-col h-full">
             {/* Header */}
             <div className="px-5 py-4 border-b shrink-0">
+              {/* Navigation arrows */}
+              {onNavigate && (
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-default"
+                    disabled={!canPrev}
+                    onClick={() => onNavigate('prev')}
+                    title="Previous lead"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  {position && (
+                    <span className="text-[11px] text-muted-foreground">{position}</span>
+                  )}
+                  <button
+                    className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-default"
+                    disabled={!canNext}
+                    onClick={() => onNavigate('next')}
+                    title="Next lead"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                  {!lead.is_overridden && (
+                    <Badge variant="secondary" className="bg-amber-100 text-amber-800 text-[10px] ml-auto">Needs Review</Badge>
+                  )}
+                </div>
+              )}
               <SheetHeader className="p-0">
                 <SheetTitle className="text-[20px] font-semibold leading-tight">
                   {lead.contact_name || 'Unknown'}
