@@ -39,6 +39,7 @@ interface LeadDetailModalProps {
   lead: Lead | null
   open: boolean
   onOpenChange: (open: boolean) => void
+  onClassify?: (opportunityId: string, stage: string, subStatus: string) => void
 }
 
 function interactionTypeKey(type: string): 'call' | 'email' | null {
@@ -125,7 +126,7 @@ function filterRecentInteractions(interactions: LeadInteraction[]): LeadInteract
   })
 }
 
-export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalProps) {
+export function LeadDetailModal({ lead, open, onOpenChange, onClassify }: LeadDetailModalProps) {
   const [interactions, setInteractions] = useState<LeadInteraction[]>([])
   const [loading, setLoading] = useState(false)
   const [noteText, setNoteText] = useState('')
@@ -466,7 +467,7 @@ export function LeadDetailModal({ lead, open, onOpenChange }: LeadDetailModalPro
               })()}
 
               {/* Classification */}
-              <LeadClassification lead={lead} />
+              <LeadClassification lead={lead} onClassify={onClassify} />
 
               {/* Interaction Timeline */}
               <div className="px-5 py-3">

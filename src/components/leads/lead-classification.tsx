@@ -84,9 +84,10 @@ interface Override {
 
 interface Props {
   lead: Lead
+  onClassify?: (opportunityId: string, stage: string, subStatus: string) => void
 }
 
-export function LeadClassification({ lead }: Props) {
+export function LeadClassification({ lead, onClassify }: Props) {
   const auto = getAutoStage(lead)
   const [override, setOverride] = useState<Override | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -119,6 +120,7 @@ export function LeadClassification({ lead }: Props) {
         body: JSON.stringify({ stage, sub_status: subStatus, loss_reason: lossReason, note }),
       })
       setOverride({ stage, sub_status: subStatus, loss_reason: lossReason, note })
+      onClassify?.(lead.lead_id, stage, subStatus)
     } finally {
       setSaving(false)
     }

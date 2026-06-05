@@ -76,6 +76,10 @@ export interface Lead {
   campaign_type: string | null
   all_jobnumbers: string | null
   job_count: number
+  // Override fields (merged from Firestore)
+  is_overridden?: boolean
+  sub_status?: string | null
+  loss_reason?: string | null
 }
 
 export interface LeadInteraction {

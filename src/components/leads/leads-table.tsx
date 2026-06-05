@@ -125,7 +125,16 @@ export function LeadsTable({ leads, onViewLead }: LeadsTableProps) {
     {
       accessorKey: 'funnel_stage',
       header: 'Funnel Stage',
-      cell: ({ row }) => row.original.funnel_stage ? <FunnelStageBadge stage={row.original.funnel_stage} /> : '—',
+      cell: ({ row }) => {
+        const l = row.original
+        if (!l.funnel_stage) return '—'
+        return (
+          <span className="inline-flex items-center gap-1">
+            <FunnelStageBadge stage={l.funnel_stage} />
+            {l.is_overridden && <span className="text-[10px] text-muted-foreground/60">✎</span>}
+          </span>
+        )
+      },
     },
     { accessorKey: 'dnp_reason', header: 'Sub-Status', cell: ({ row }) => row.original.dnp_reason ?? '—' },
     {
