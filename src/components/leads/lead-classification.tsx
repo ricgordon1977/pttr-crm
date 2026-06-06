@@ -1,43 +1,55 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Badge } from '@/components/ui/badge'
 import { authFetch } from '@/lib/auth/auth-fetch'
-import { ChevronDown } from 'lucide-react'
 import type { Lead } from '@/types/database'
 
 // ─── TAXONOMY ───────────────────────────────────────────────────────────────
 
-const STAGES = {
-  'Not Captured': {
-    auto: true,
-    subStatuses: ['Dropped Call', 'Unanswered Call'],
-  },
-  'Not Quotable': {
-    auto: false,
+const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string }[] }[] = [
+  {
+    stage: 'Not Captured',
     subStatuses: [
-      'Outside Service Area', 'Service Not Provided', 'Strata Issue', 'Spam',
-      'Customer Inquiry Only', 'Wrong Number / Contact Details', 'Technical Error',
+      { label: 'Dropped Call', autoKey: 'dropped' },
+      { label: 'Unanswered Call', autoKey: 'unanswered' },
     ],
   },
-  'Not Booked': {
-    auto: false,
+  {
+    stage: 'Not Quotable',
     subStatuses: [
-      'Lost / Unresponsive', 'Tenant / Strata Referral', 'Price / Minimum Call Out',
-      'Capacity / Scheduling', 'Wanted Quote Over Phone', 'Customer Resolved',
-      'CSR Failure', 'Other',
+      { label: 'Outside Service Area' },
+      { label: 'Service Not Provided' },
+      { label: 'Strata Issue' },
+      { label: 'Spam' },
+      { label: 'Customer Inquiry Only' },
+      { label: 'Wrong Number / Contact Details' },
+      { label: 'Technical Error' },
     ],
   },
-  'Booked': {
-    auto: true,
+  {
+    stage: 'Not Booked',
     subStatuses: [
-      'Job Pending', 'Job Complete',
-      'Booking Cancelled', 'Quote Only', 'Unable to Complete Job - Out of Scope',
+      { label: 'Lost / Unresponsive' },
+      { label: 'Tenant / Strata Referral' },
+      { label: 'Price / Minimum Call Out' },
+      { label: 'Capacity / Scheduling' },
+      { label: 'Wanted Quote Over Phone' },
+      { label: 'Customer Resolved' },
+      { label: 'CSR Failure' },
+      { label: 'Other' },
     ],
   },
-} as const
-
-type StageName = keyof typeof STAGES
+  {
+    stage: 'Booked',
+    subStatuses: [
+      { label: 'Job Pending', autoKey: 'pending' },
+      { label: 'Job Complete', autoKey: 'complete' },
+      { label: 'Booking Cancelled' },
+      { label: 'Quote Only' },
+      { label: 'Unable to Complete Job - Out of Scope' },
+    ],
+  },
+]
 
 const LOSS_REASONS = [
   'Price Sensitivity', 'Competitor Speed', 'Speed to Lead', 'Wanted Same Day',
@@ -50,41 +62,32 @@ const LOSS_REASON_STAGES = new Set(['Not Booked', 'Booking Cancelled', 'Quote On
 
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
-function getAutoStage(lead: Lead): { stage: string; sub_status: string } {
-  // Single source of truth: BQ funnel_stage + objective fields
+function getAutoPlacement(lead: Lead): { stage: string; sub_status: string } {
   if (lead.completed) return { stage: 'Booked', sub_status: 'Job Complete' }
   if (lead.booking_status === 'Booked') return { stage: 'Booked', sub_status: 'Job Pending' }
-  if (lead.captured) return { stage: 'Captured', sub_status: '' } // awaiting classification
+  if (lead.captured) return { stage: 'Captured', sub_status: '' }
   if (lead.answered && !lead.captured) return { stage: 'Not Captured', sub_status: 'Dropped Call' }
   if (lead.lead_type === 'call' && !lead.answered) return { stage: 'Not Captured', sub_status: 'Unanswered Call' }
-  // Forms/email or unknown
   if (lead.funnel_stage === 'Captured') return { stage: 'Captured', sub_status: '' }
   return { stage: 'Not Captured', sub_status: '' }
 }
 
-function stageColor(stage: string): string {
-  switch (stage) {
-    case 'Not Captured': return 'bg-gray-100 text-gray-800'
-    case 'Captured': return 'bg-yellow-100 text-yellow-800'
-    case 'Not Quotable': return 'bg-orange-100 text-orange-800'
-    case 'Not Booked': return 'bg-red-100 text-red-800'
-    case 'Booked': return 'bg-green-100 text-green-800'
-    default: return 'bg-gray-100 text-gray-800'
-  }
+function isAutoItem(lead: Lead, stage: string, ss: string): boolean {
+  if (stage === 'Not Captured' && ss === 'Dropped Call') return !!(lead.answered && !lead.captured)
+  if (stage === 'Not Captured' && ss === 'Unanswered Call') return !!(lead.lead_type === 'call' && !lead.answered)
+  if (stage === 'Booked' && ss === 'Job Pending') return !!(lead.booking_status === 'Booked' && !lead.completed)
+  if (stage === 'Booked' && ss === 'Job Complete') return !!lead.completed
+  return false
 }
 
-function stageLabel(stage: string): string {
-  return stage === 'Captured' ? 'New Lead' : stage
+const STAGE_COLORS: Record<string, { header: string; active: string }> = {
+  'Not Captured': { header: 'text-gray-500', active: 'bg-gray-700 text-white' },
+  'Not Quotable': { header: 'text-orange-600', active: 'bg-orange-600 text-white' },
+  'Not Booked': { header: 'text-red-600', active: 'bg-red-600 text-white' },
+  'Booked': { header: 'text-green-700', active: 'bg-green-700 text-white' },
 }
 
 // ─── COMPONENT ──────────────────────────────────────────────────────────────
-
-interface Override {
-  stage: string
-  sub_status: string
-  loss_reason?: string | null
-  note?: string | null
-}
 
 interface Props {
   lead: Lead
@@ -92,16 +95,14 @@ interface Props {
 }
 
 export function LeadClassification({ lead, onClassify }: Props) {
-  const auto = getAutoStage(lead)
-  const [override, setOverride] = useState<Override | null>(null)
+  const auto = getAutoPlacement(lead)
+  const [override, setOverride] = useState<{ stage: string; sub_status: string; loss_reason?: string | null; note?: string | null } | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [expanded, setExpanded] = useState(false)
 
   const effective = override || { stage: auto.stage, sub_status: auto.sub_status, loss_reason: null, note: null }
   const isOverridden = override !== null
-  // Captured leads awaiting human classification
-  const needsClassification = !isOverridden && effective.stage === 'Captured'
+  const showLossReason = LOSS_REASON_STAGES.has(effective.sub_status) || effective.stage === 'Not Booked'
 
   useEffect(() => {
     setLoaded(false)
@@ -115,166 +116,122 @@ export function LeadClassification({ lead, onClassify }: Props) {
       .catch(() => setLoaded(true))
   }, [lead.lead_id])
 
-  async function save(stage: string, subStatus: string, lossReason?: string | null, note?: string | null) {
+  async function classify(stage: string, subStatus: string, lossReason?: string | null, note?: string | null) {
     setSaving(true)
     try {
       await authFetch(`/api/leads/${lead.lead_id}/classify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stage, sub_status: subStatus, loss_reason: lossReason, note }),
+        body: JSON.stringify({ stage, sub_status: subStatus, loss_reason: lossReason || effective.loss_reason, note: note ?? effective.note }),
       })
-      setOverride({ stage, sub_status: subStatus, loss_reason: lossReason, note })
+      setOverride({ stage, sub_status: subStatus, loss_reason: lossReason || effective.loss_reason, note: note ?? effective.note })
       onClassify?.(lead.lead_id, stage, subStatus)
     } finally {
       setSaving(false)
     }
   }
 
-  if (!loaded) return null
-
-  const showLossReason = LOSS_REASON_STAGES.has(effective.sub_status) || effective.stage === 'Not Booked'
+  if (!loaded) return <div className="px-4 py-2 text-[11px] text-muted-foreground">Loading...</div>
 
   return (
-    <div className="px-5 py-3 border-b">
-      {/* Stage bar */}
-      <div className="flex items-center gap-2 mb-2">
-        <button
-          className="flex items-center gap-1 text-[12px] font-semibold text-muted-foreground uppercase tracking-wider"
-          onClick={() => setExpanded(!expanded)}
-        >
-          <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? '' : '-rotate-90'}`} />
-          Classification
-        </button>
-        <Badge className={`text-xs font-medium ${stageColor(effective.stage)}`}>
-          {stageLabel(effective.stage)}
-        </Badge>
-        {effective.sub_status && (
-          <span className="text-[12px] text-muted-foreground">{effective.sub_status}</span>
+    <div className="px-4 py-2 border-b space-y-1">
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Classification</span>
+        {saving && <span className="text-[10px] text-blue-500">Saving...</span>}
+        {isOverridden && (
+          <button
+            className="text-[10px] text-blue-600 hover:underline ml-auto"
+            onClick={() => { classify(auto.stage, auto.sub_status); setOverride(null) }}
+          >
+            Reset to auto
+          </button>
         )}
-        <span className="text-[11px] text-muted-foreground/60 ml-1">
-          {isOverridden ? '(edited)' : needsClassification ? '(needs review)' : '(auto)'}
-        </span>
-        {saving && <span className="text-[11px] text-blue-500 ml-auto">Saving...</span>}
       </div>
 
-      {expanded && (
-        <div className="space-y-3 pl-4">
-          {/* Stage pills */}
-          <div className="flex flex-wrap gap-1.5">
-            {['Not Captured', 'Captured', 'Not Quotable', 'Not Booked', 'Booked'].map(stage => (
-              <button
-                key={stage}
-                className={`text-[12px] px-2.5 py-1 rounded-full border transition-colors ${
-                  effective.stage === stage
-                    ? stageColor(stage) + ' border-transparent font-medium'
-                    : 'bg-white text-muted-foreground border-muted hover:border-foreground/30'
-                }`}
-                onClick={() => {
-                  if (stage === auto.stage) {
-                    if (isOverridden) {
-                      save(auto.stage, auto.sub_status)
-                      setOverride(null)
-                    }
-                  } else if (stage === 'Captured') {
-                    return
-                  } else {
-                    save(stage, '')
-                  }
-                }}
-              >
-                {stageLabel(stage)}
-                {stage === auto.stage && !isOverridden ? ' ●' : ''}
-              </button>
-            ))}
-          </div>
+      {/* New Lead banner (captured, awaiting classification) */}
+      {effective.stage === 'Captured' && !isOverridden && (
+        <div className="text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1 mb-1">
+          New Lead — click a sub-status below to classify
+        </div>
+      )}
 
-          {/* Sub-status select */}
-          <div>
-            <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Sub-status</div>
-            {effective.stage === 'Captured' ? (
-              <p className="text-[12px] text-muted-foreground italic">New Lead — select Not Quotable or Not Booked above to classify</p>
-            ) : (
-            <div className="flex flex-wrap gap-1">
-              {(STAGES[effective.stage as StageName]?.subStatuses || []).map(ss => {
-                const isAuto = (ss === 'Job Complete' && lead.completed) ||
-                  (ss === 'Job Pending' && lead.booking_status === 'Booked' && !lead.completed) ||
-                  (ss === 'Dropped Call' && lead.answered && !lead.captured) ||
-                  (ss === 'Unanswered Call' && !lead.answered && lead.lead_type === 'call')
+      {/* Flat taxonomy */}
+      {TAXONOMY.map(({ stage, subStatuses }) => {
+        const colors = STAGE_COLORS[stage] || STAGE_COLORS['Not Captured']
+        return (
+          <div key={stage} className="flex items-start gap-2">
+            <span className={`text-[10px] font-semibold uppercase tracking-wider w-[90px] shrink-0 pt-[3px] ${colors.header}`}>
+              {stage === 'Not Captured' ? 'Not Capt.' : stage === 'Not Quotable' ? 'Not Quot.' : stage}
+            </span>
+            <div className="flex flex-wrap gap-[3px]">
+              {subStatuses.map(({ label }) => {
+                const isActive = effective.stage === stage && effective.sub_status === label
+                const isAuto = isAutoItem(lead, stage, label)
+                const isAutoNotCaptured = stage === 'Not Captured' && (label === 'Dropped Call' || label === 'Unanswered Call')
                 return (
                   <button
-                    key={ss}
-                    className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
-                      effective.sub_status === ss
-                        ? 'bg-foreground text-background border-transparent font-medium'
-                        : 'bg-white text-muted-foreground border-muted hover:border-foreground/30'
-                    }`}
-                    onClick={() => save(effective.stage, ss, effective.loss_reason, effective.note)}
+                    key={label}
+                    disabled={saving}
+                    className={`text-[10px] px-1.5 py-[1px] rounded border transition-colors ${
+                      isActive
+                        ? colors.active + ' border-transparent font-medium'
+                        : isAuto && !isActive
+                          ? 'bg-muted/60 text-muted-foreground border-muted font-medium'
+                          : 'bg-white text-muted-foreground border-muted/60 hover:border-foreground/30 hover:bg-muted/30'
+                    } ${isAutoNotCaptured && !isActive ? 'opacity-60' : ''}`}
+                    onClick={() => classify(stage, label)}
+                    title={isAuto ? `Auto-detected: ${label}` : label}
                   >
-                    {ss}{isAuto && effective.sub_status !== ss ? ' ●' : ''}
+                    {label}{isAuto && !isActive ? ' ●' : ''}
                   </button>
                 )
               })}
             </div>
-            )}
           </div>
+        )
+      })}
 
-          {/* Loss reason (only for lost/cancelled) */}
-          {showLossReason && (
-            <div>
-              <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Loss Reason</div>
-              <div className="flex flex-wrap gap-1">
-                {LOSS_REASONS.map(lr => (
-                  <button
-                    key={lr}
-                    className={`text-[11px] px-2 py-0.5 rounded border transition-colors ${
-                      effective.loss_reason === lr
-                        ? 'bg-foreground text-background border-transparent font-medium'
-                        : 'bg-white text-muted-foreground border-muted hover:border-foreground/30'
-                    }`}
-                    onClick={() => save(effective.stage, effective.sub_status, lr, effective.note)}
-                  >
-                    {lr}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Note for "Other" sub-status */}
-          {effective.sub_status === 'Other' && (
-            <div>
-              <div className="text-[11px] text-muted-foreground uppercase tracking-wider mb-1">Note</div>
-              <input
-                type="text"
-                className="w-full text-[12px] border rounded px-2 py-1"
-                placeholder="Describe..."
-                defaultValue={effective.note || ''}
-                onBlur={e => {
-                  if (e.target.value !== (effective.note || '')) {
-                    save(effective.stage, effective.sub_status, effective.loss_reason, e.target.value)
-                  }
-                }}
-              />
-            </div>
-          )}
-
-          {/* Baseline vs override indicator */}
-          {isOverridden && (
-            <div className="text-[11px] text-muted-foreground border-t pt-2 mt-1">
-              Auto baseline: <span className="font-medium">{stageLabel(auto.stage)}</span>
-              {auto.sub_status && <> / {auto.sub_status}</>}
-              {' · '}
+      {/* Loss reason — inline, only when applicable */}
+      {showLossReason && (
+        <div className="flex items-start gap-2 pt-1 border-t border-muted/40 mt-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wider w-[90px] shrink-0 pt-[3px] text-muted-foreground">
+            Loss reason
+          </span>
+          <div className="flex flex-wrap gap-[3px]">
+            {LOSS_REASONS.map(lr => (
               <button
-                className="text-blue-600 hover:underline"
-                onClick={() => {
-                  save(auto.stage, auto.sub_status)
-                  setOverride(null)
-                }}
+                key={lr}
+                disabled={saving}
+                className={`text-[10px] px-1.5 py-[1px] rounded border transition-colors ${
+                  effective.loss_reason === lr
+                    ? 'bg-foreground text-background border-transparent font-medium'
+                    : 'bg-white text-muted-foreground border-muted/60 hover:border-foreground/30 hover:bg-muted/30'
+                }`}
+                onClick={() => classify(effective.stage, effective.sub_status, lr)}
               >
-                Reset to auto
+                {lr}
               </button>
-            </div>
-          )}
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Note for "Other" */}
+      {effective.sub_status === 'Other' && (
+        <div className="flex items-start gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-wider w-[90px] shrink-0 pt-[3px] text-muted-foreground">Note</span>
+          <input
+            type="text"
+            className="flex-1 text-[11px] border rounded px-2 py-0.5"
+            placeholder="Describe..."
+            defaultValue={effective.note || ''}
+            onBlur={e => {
+              if (e.target.value !== (effective.note || '')) {
+                classify(effective.stage, effective.sub_status, effective.loss_reason, e.target.value)
+              }
+            }}
+          />
         </div>
       )}
     </div>

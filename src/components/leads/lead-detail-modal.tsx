@@ -296,6 +296,9 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
               </SheetHeader>
             </div>
 
+            {/* Classification panel — visible while reading interaction */}
+            <LeadClassification lead={lead} onClassify={onClassify} />
+
             <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
               {detailLoading ? (
                 <div className="space-y-3">
