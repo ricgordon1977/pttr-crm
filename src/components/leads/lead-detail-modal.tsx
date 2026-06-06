@@ -16,34 +16,25 @@ import { FunnelStageBadge } from '@/components/shared/status-badge'
 import { LeadClassification } from '@/components/leads/lead-classification'
 import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from '@/lib/format'
 import { authFetch } from '@/lib/auth/auth-fetch'
-import { ArrowLeft, ChevronDown, ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, PhoneIncoming, PhoneOutgoing, Mail, Send, FileText } from 'lucide-react'
 import type { Lead, LeadInteraction, JobHistory } from '@/types/database'
 
+// ─── TYPES + HELPERS ────────────────────────────────────────────────────────
+
 interface InteractionDetail {
-  operator?: string
-  operator_name?: string
-  caller_phone?: string
-  duration_seconds?: number
-  full_transcript?: string
-  recording_url?: string
-  wc_recording_url?: string
-  call_datetime?: string
-  from_address?: string
-  to_address?: string
-  subject?: string
-  email_body?: string
-  submitted_at?: string
+  operator?: string; operator_name?: string; caller_phone?: string
+  duration_seconds?: number; full_transcript?: string
+  recording_url?: string; wc_recording_url?: string; call_datetime?: string
+  from_address?: string; to_address?: string; subject?: string
+  email_body?: string; submitted_at?: string
 }
 
 interface LeadDetailModalProps {
-  lead: Lead | null
-  open: boolean
+  lead: Lead | null; open: boolean
   onOpenChange: (open: boolean) => void
   onClassify?: (opportunityId: string, stage: string, subStatus: string) => void
   onNavigate?: (direction: 'prev' | 'next') => void
-  canPrev?: boolean
-  canNext?: boolean
-  position?: string
+  canPrev?: boolean; canNext?: boolean; position?: string
 }
 
 function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
@@ -54,63 +45,108 @@ function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
   return null
 }
 
-function ChannelBadge({ channel }: { channel: string }) {
-  const ch = channel?.toLowerCase() ?? ''
-  if (ch.includes('call') || ch.includes('phone')) {
-    return <Badge variant="secondary" className="bg-red-100 text-red-800 font-medium text-xs">Call</Badge>
-  }
-  if (ch.includes('form') || ch.includes('web')) {
-    return <Badge variant="secondary" className="bg-blue-100 text-blue-800 font-medium text-xs">Form</Badge>
-  }
-  return <Badge variant="secondary" className="text-xs">{channel}</Badge>
-}
-
-function ProfileLabel({ profile }: { profile: string }) {
-  if (profile.toLowerCase().includes('plumber')) {
-    return <span className="text-[13px] text-sky-700">Plumber to the Rescue</span>
-  }
-  if (profile.toLowerCase().includes('electr')) {
-    return <span className="text-[13px] text-amber-700">Electrician to the Rescue</span>
-  }
-  return <span className="text-[13px] text-muted-foreground">{profile}</span>
-}
-
 function InteractionIcon({ type }: { type: string }) {
   const t = type?.toLowerCase() ?? ''
-  if (t.includes('inbound') && t.includes('call')) return <PhoneIncoming className="h-4 w-4 text-green-600" />
-  if (t.includes('outbound') && t.includes('call')) return <PhoneOutgoing className="h-4 w-4 text-blue-600" />
-  if (t.includes('inbound') && t.includes('email')) return <Mail className="h-4 w-4 text-green-600" />
-  if (t.includes('outbound') && t.includes('email')) return <Send className="h-4 w-4 text-blue-600" />
-  if (t.includes('form')) return <FileText className="h-4 w-4 text-purple-600" />
-  if (t.includes('call') || t.includes('phone')) return <PhoneIncoming className="h-4 w-4 text-green-600" />
-  if (t.includes('email')) return <Mail className="h-4 w-4 text-green-600" />
-  return <FileText className="h-4 w-4 text-muted-foreground" />
+  if (t.includes('inbound') && t.includes('call')) return <PhoneIncoming className="h-3.5 w-3.5 text-green-600" />
+  if (t.includes('outbound') && t.includes('call')) return <PhoneOutgoing className="h-3.5 w-3.5 text-blue-500" />
+  if (t.includes('inbound') && t.includes('email')) return <Mail className="h-3.5 w-3.5 text-green-600" />
+  if (t.includes('outbound') && t.includes('email')) return <Send className="h-3.5 w-3.5 text-blue-500" />
+  if (t.includes('form')) return <FileText className="h-3.5 w-3.5 text-purple-500" />
+  if (t.includes('call')) return <PhoneIncoming className="h-3.5 w-3.5 text-green-600" />
+  if (t.includes('email')) return <Mail className="h-3.5 w-3.5 text-green-600" />
+  return <FileText className="h-3.5 w-3.5 text-muted-foreground" />
 }
 
 function stripHtml(html: string | null | undefined): string {
   if (!html) return ''
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<\/li>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/\n{3,}/g, '\n\n').trim()
 }
 
-function hasDnp(reason: string | null | undefined): boolean {
-  if (!reason) return false
-  const r = reason.trim().toLowerCase()
-  return r !== '' && r !== '--' && r !== '-' && r !== 'select one'
+// ─── INLINE INTERACTION DETAIL ──────────────────────────────────────────────
+
+function InlineInteractionDetail({ ix, lead }: { ix: LeadInteraction; lead: Lead }) {
+  const [detail, setDetail] = useState<InteractionDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
+  const [recordingLoading, setRecordingLoading] = useState(false)
+  const type = interactionTypeKey(ix.interaction_type)
+  const isCall = type === 'call'
+
+  useEffect(() => {
+    setLoading(true)
+    setDetail(null)
+    setRecordingUrl(null)
+    const callId = ix.call_id || ix.interaction_id
+    authFetch(`/api/leads/${lead.lead_id}/interaction?type=${type}&call_id=${encodeURIComponent(callId)}&datetime=${encodeURIComponent(ix.interaction_datetime)}`)
+      .then(r => r.json())
+      .then(data => setDetail(data))
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [ix.interaction_id, ix.call_id, lead.lead_id, ix.interaction_datetime, type])
+
+  // Fetch recording
+  useEffect(() => {
+    if (!detail?.recording_url && !detail?.wc_recording_url) return
+    let cancelled = false
+    setRecordingLoading(true)
+    async function fetchRec() {
+      if (detail?.wc_recording_url) {
+        try {
+          const r = await authFetch(`/api/recordings/wc?url=${encodeURIComponent(detail.wc_recording_url)}`)
+          if (r.ok) { const d = await r.json(); if (!cancelled) setRecordingUrl(d.url); return }
+        } catch {}
+      }
+      if (detail?.recording_url) {
+        try {
+          const r = await authFetch(`/api/recordings?uri=${encodeURIComponent(detail.recording_url)}`)
+          if (r.ok) { const d = await r.json(); if (!cancelled) setRecordingUrl(d.url); return }
+        } catch {}
+      }
+    }
+    fetchRec().finally(() => { if (!cancelled) setRecordingLoading(false) })
+    return () => { cancelled = true }
+  }, [detail?.recording_url, detail?.wc_recording_url])
+
+  if (loading) return <div className="px-4 py-2"><Skeleton className="h-20 w-full" /></div>
+
+  if (isCall) {
+    const shortCall = !detail?.full_transcript && !recordingUrl && !recordingLoading &&
+      ix.interaction_duration_seconds != null && ix.interaction_duration_seconds < 10
+    return (
+      <div className="px-4 py-2 bg-muted/20 border-t border-muted/40 space-y-2">
+        {recordingLoading && <Skeleton className="h-8 w-full rounded" />}
+        {recordingUrl && <audio controls className="w-full h-8" src={recordingUrl} preload="none" />}
+        {shortCall ? (
+          <p className="text-[12px] text-muted-foreground">
+            No recording — {ix.interaction_duration_seconds}s call does not meet recording threshold
+          </p>
+        ) : (
+          <div className="text-[12px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
+            {detail?.full_transcript || 'No transcript available.'}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Email / form
+  return (
+    <div className="px-4 py-2 bg-muted/20 border-t border-muted/40 space-y-2">
+      <div className="text-[11px] text-muted-foreground space-y-0.5">
+        {detail?.from_address && <div>From: {detail.from_address}</div>}
+        {detail?.to_address && <div>To: {detail.to_address}</div>}
+        {detail?.subject && <div className="font-medium">{detail.subject}</div>}
+      </div>
+      <div className="text-[12px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
+        {detail?.email_body || 'No content available.'}
+      </div>
+    </div>
+  )
 }
 
-// Removed: filterRecentInteractions — the opportunity cluster IS the window
+// ─── MAIN COMPONENT ─────────────────────────────────────────────────────────
 
 export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNavigate, canPrev, canNext, position }: LeadDetailModalProps) {
   const [interactions, setInteractions] = useState<LeadInteraction[]>([])
@@ -118,479 +154,192 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
   const [noteText, setNoteText] = useState('')
   const [saving, setSaving] = useState(false)
   const [noteOpen, setNoteOpen] = useState(false)
-
   const [jobHistory, setJobHistory] = useState<JobHistory[]>([])
   const [jobHistoryLoading, setJobHistoryLoading] = useState(false)
-  const [speedToLead, setSpeedToLead] = useState<number | null>(null)
-
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [notes, setNotes] = useState<any[]>([])
   const [notesLoading, setNotesLoading] = useState(false)
-
-  const [selectedInteraction, setSelectedInteraction] = useState<LeadInteraction | null>(null)
-  const [interactionDetail, setInteractionDetail] = useState<InteractionDetail | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
-  const [recordingUrl, setRecordingUrl] = useState<string | null>(null)
-  const [recordingLoading, setRecordingLoading] = useState(false)
-  const [recordingError, setRecordingError] = useState(false)
+  const [expandedIx, setExpandedIx] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     if (!lead || !open) {
-      setInteractions([])
-      setSelectedInteraction(null)
-      setInteractionDetail(null)
-      setRecordingUrl(null)
-      setRecordingLoading(false)
-      setRecordingError(false)
-      setNoteOpen(false)
-      setJobHistory([])
-      setSpeedToLead(null)
+      setInteractions([]); setJobHistory([]); setNoteOpen(false); setExpandedIx(new Set())
       return
     }
-
     async function fetchInteractions() {
       setLoading(true)
       const res = await authFetch(`/api/leads/${lead!.lead_id}/interactions`)
-      const raw = await res.json()
-      const data: LeadInteraction[] = Array.isArray(raw) ? raw : []
+      const data: LeadInteraction[] = await res.json().then(r => Array.isArray(r) ? r : [])
       setInteractions(data)
+      // Auto-expand the most recent interaction
+      if (data.length > 0) setExpandedIx(new Set([data[0].interaction_id || data[0].call_id || '0']))
       setLoading(false)
     }
-
     async function fetchJobHistory() {
       setJobHistoryLoading(true)
-      const res = await authFetch(`/api/leads/${lead!.lead_id}/job-history`)
-      const raw = await res.json()
-      setJobHistory(Array.isArray(raw) ? raw : [])
+      const r = await authFetch(`/api/leads/${lead!.lead_id}/job-history`)
+      setJobHistory(await r.json().then((d: unknown) => Array.isArray(d) ? d : []))
       setJobHistoryLoading(false)
     }
-
     async function fetchNotes() {
       setNotesLoading(true)
-      const res = await authFetch(`/api/leads/${lead!.lead_id}/notes`)
-      const raw = await res.json()
-      setNotes(Array.isArray(raw) ? raw : [])
+      const r = await authFetch(`/api/leads/${lead!.lead_id}/notes`)
+      setNotes(await r.json().then((d: unknown) => Array.isArray(d) ? d : []))
       setNotesLoading(false)
     }
-
-    fetchInteractions()
-    fetchJobHistory()
-    fetchNotes()
+    fetchInteractions(); fetchJobHistory(); fetchNotes()
   }, [lead, open])
 
-  // Fetch recording: WC proxy first (100% coverage), GCS signed URL fallback
-  useEffect(() => {
-    const gcsUri = interactionDetail?.recording_url
-    const wcUrl = interactionDetail?.wc_recording_url
-    if (!gcsUri && !wcUrl) return
-    let cancelled = false
-    setRecordingLoading(true)
-    setRecordingError(false)
-    async function fetchRecording() {
-      // Try WC recording first (100% coverage, returns token-authenticated URL)
-      if (wcUrl) {
-        try {
-          const res = await authFetch(`/api/recordings/wc?url=${encodeURIComponent(wcUrl)}`)
-          if (res.ok) {
-            const data = await res.json()
-            if (!cancelled) setRecordingUrl(data.url)
-            return
-          }
-        } catch { /* fall through to GCS */ }
-      }
-      // Fallback: GCS signed URL (8x8 recordings)
-      if (gcsUri) {
-        try {
-          const res = await authFetch(`/api/recordings?uri=${encodeURIComponent(gcsUri)}`)
-          if (res.ok) {
-            const data = await res.json()
-            if (!cancelled) setRecordingUrl(data.url)
-            return
-          }
-        } catch { /* fall through */ }
-      }
-      if (!cancelled) setRecordingError(true)
-    }
-
-    fetchRecording().finally(() => {
-        if (!cancelled) setRecordingLoading(false)
-      })
-
-    return () => { cancelled = true }
-  }, [interactionDetail?.recording_url, interactionDetail?.wc_recording_url])
-
-  const handleInteractionClick = useCallback(async (ix: LeadInteraction) => {
-    if (!lead) return
-    const type = interactionTypeKey(ix.interaction_type)
-    if (!type) return
-
-    setSelectedInteraction(ix)
-    setDetailLoading(true)
-    setInteractionDetail(null)
-    setRecordingUrl(null)
-    setRecordingLoading(false)
-    setRecordingError(false)
-
-    try {
-      const callId = ix.call_id || ix.interaction_id
-      const res = await authFetch(
-        `/api/leads/${lead.lead_id}/interaction?type=${type}&call_id=${encodeURIComponent(callId)}&datetime=${encodeURIComponent(ix.interaction_datetime)}`
-      )
-      if (res.ok) {
-        const data = await res.json()
-        setInteractionDetail(data)
-      }
-    } catch (err) {
-      console.error('Failed to fetch interaction detail:', err)
-    } finally {
-      setDetailLoading(false)
-    }
-  }, [lead])
-
-  const handleBack = useCallback(() => {
-    setSelectedInteraction(null)
-    setInteractionDetail(null)
+  const toggleIx = useCallback((id: string) => {
+    setExpandedIx(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
   }, [])
 
-  // Derive converted job from job history — find closest job within 30 days of lead date
   const convertedJob = useMemo(() => {
-    if (!lead || !Array.isArray(jobHistory) || jobHistory.length === 0) return null
-    const leadDate = new Date(lead.lead_date || lead.lead_datetime)
-    if (isNaN(leadDate.getTime())) return null
-    const cutoff = new Date(leadDate.getTime() + 30 * 24 * 60 * 60 * 1000)
-
-    let closest: JobHistory | null = null
-    let closestDiff = Infinity
-    for (const job of jobHistory) {
-      const jobDate = new Date(job.requested_date)
-      if (isNaN(jobDate.getTime())) continue
-      if (jobDate >= leadDate && jobDate <= cutoff) {
-        const diff = Math.abs(jobDate.getTime() - leadDate.getTime())
-        if (diff < closestDiff) {
-          closestDiff = diff
-          closest = job
-        }
+    if (!lead || !jobHistory?.length) return null
+    const ld = new Date(lead.lead_date || lead.lead_datetime)
+    if (isNaN(ld.getTime())) return null
+    const cut = new Date(ld.getTime() + 30 * 86400000)
+    let best: JobHistory | null = null, bestD = Infinity
+    for (const j of jobHistory) {
+      const jd = new Date(j.requested_date)
+      if (!isNaN(jd.getTime()) && jd >= ld && jd <= cut) {
+        const d = Math.abs(jd.getTime() - ld.getTime())
+        if (d < bestD) { bestD = d; best = j }
       }
     }
-    return closest
+    return best
   }, [lead, jobHistory])
 
   if (!lead) return null
 
-  const isCall = selectedInteraction ? interactionTypeKey(selectedInteraction.interaction_type) === 'call' : false
-
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-[55vw] min-w-[800px] sm:max-w-none overflow-hidden p-0">
-        {selectedInteraction ? (
-          /* ── INTERACTION DETAIL VIEW — full sheet takeover ── */
-          <div className="flex flex-col h-full">
-            <div className="flex items-center gap-2 px-5 py-3 border-b shrink-0">
-              <Button variant="ghost" size="icon-sm" onClick={handleBack}>
-                <ArrowLeft className="h-4 w-4" />
-              </Button>
-              <SheetHeader className="p-0 flex-1">
-                <SheetTitle className="text-[15px] font-semibold">
-                  Lead {lead.lead_id} — {selectedInteraction.interaction_type} — {formatDate(selectedInteraction.interaction_date, 'd MMM yyyy')} {selectedInteraction.interaction_time}
-                </SheetTitle>
-              </SheetHeader>
-            </div>
-
-            {/* Classification panel — visible while reading interaction */}
-            <LeadClassification lead={lead} onClassify={onClassify} />
-
-            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
-              {detailLoading ? (
-                <div className="space-y-3">
-                  <Skeleton className="h-4 w-1/3" />
-                  <Skeleton className="h-4 w-1/4" />
-                  <Skeleton className="h-40 w-full" />
-                </div>
-              ) : isCall ? (
-                <>
-                  <div className="flex gap-6 text-[13px]">
-                    <div><span className="font-semibold text-muted-foreground">Operator</span> <span className="ml-1">{interactionDetail?.operator || interactionDetail?.operator_name || selectedInteraction.interaction_operator || '—'}</span></div>
-                    {selectedInteraction.interaction_duration_seconds ? (
-                      <div><span className="font-semibold text-muted-foreground">Duration</span> <span className="ml-1">{selectedInteraction.interaction_duration_seconds}s</span></div>
-                    ) : null}
-                  </div>
-                  {/* Audio player */}
-                  {recordingLoading && (
-                    <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-                      <Skeleton className="h-8 w-full rounded" />
-                    </div>
-                  )}
-                  {recordingError && (
-                    <p className="text-[13px] text-muted-foreground">Recording unavailable.</p>
-                  )}
-                  {recordingUrl && (
-                    <audio controls className="w-full h-8" src={recordingUrl} preload="none" />
-                  )}
-                  <Separator />
-                  {!interactionDetail?.full_transcript && !recordingUrl && !recordingLoading && (selectedInteraction.interaction_duration_seconds != null && selectedInteraction.interaction_duration_seconds < 10) ? (
-                    <p className="text-[13px] text-muted-foreground py-4">
-                      No recording or transcript available — {selectedInteraction.interaction_duration_seconds}s call duration does not meet minimum recording threshold
-                    </p>
-                  ) : (
-                    <div className="text-[13px] whitespace-pre-wrap font-mono bg-muted/40 rounded p-4 overflow-y-auto leading-relaxed" style={{ maxHeight: 'calc(100vh - 220px)' }}>
-                      {interactionDetail?.full_transcript || 'No transcript available.'}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <>
-                  <div className="space-y-1 text-[13px]">
-                    <div><span className="font-semibold text-muted-foreground">From</span> <span className="ml-2">{interactionDetail?.from_address || '—'}</span></div>
-                    <div><span className="font-semibold text-muted-foreground">To</span> <span className="ml-2">{interactionDetail?.to_address || '—'}</span></div>
-                    <div><span className="font-semibold text-muted-foreground">Subject</span> <span className="ml-2">{interactionDetail?.subject || '—'}</span></div>
-                  </div>
-                  <Separator />
-                  <div className="text-[13px] whitespace-pre-wrap bg-muted/40 rounded p-4 overflow-y-auto leading-relaxed" style={{ maxHeight: 'calc(100vh - 180px)' }}>
-                    {interactionDetail?.email_body || 'No content available.'}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        ) : (
-          /* ── LEAD DETAIL + TIMELINE VIEW ── */
-          <div className="flex flex-col h-full">
+      <SheetContent side="right" className="w-[70vw] min-w-[960px] sm:max-w-none overflow-hidden p-0">
+        <div className="flex h-full">
+          {/* ── LEFT: scrollable lead context ── */}
+          <div className="flex-1 flex flex-col min-w-0 border-r">
             {/* Header */}
-            <div className="px-5 py-4 border-b shrink-0">
-              {/* Navigation arrows */}
+            <div className="px-5 py-3 border-b shrink-0">
               {onNavigate && (
-                <div className="flex items-center gap-2 mb-2">
-                  <button
-                    className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-default"
-                    disabled={!canPrev}
-                    onClick={() => onNavigate('prev')}
-                    title="Previous lead"
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </button>
-                  {position && (
-                    <span className="text-[11px] text-muted-foreground">{position}</span>
-                  )}
-                  <button
-                    className="p-1 rounded hover:bg-muted disabled:opacity-30 disabled:cursor-default"
-                    disabled={!canNext}
-                    onClick={() => onNavigate('next')}
-                    title="Next lead"
-                  >
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                  {!lead.is_overridden && (
-                    <Badge variant="secondary" className="bg-amber-100 text-amber-800 text-[10px] ml-auto">Needs Review</Badge>
-                  )}
+                <div className="flex items-center gap-2 mb-1.5">
+                  <button className="p-1 rounded hover:bg-muted disabled:opacity-30" disabled={!canPrev} onClick={() => onNavigate('prev')}><ChevronLeft className="h-4 w-4" /></button>
+                  {position && <span className="text-[11px] text-muted-foreground tabular-nums">{position}</span>}
+                  <button className="p-1 rounded hover:bg-muted disabled:opacity-30" disabled={!canNext} onClick={() => onNavigate('next')}><ChevronRight className="h-4 w-4" /></button>
+                  {!lead.is_overridden && <Badge variant="secondary" className="bg-amber-100 text-amber-800 text-[10px] ml-auto">Needs Review</Badge>}
                 </div>
               )}
               <SheetHeader className="p-0">
-                <SheetTitle className="text-[20px] font-semibold leading-tight">
+                <SheetTitle className="text-[18px] font-semibold leading-tight font-[family-name:var(--font-display)]">
                   {lead.contact_name || 'Unknown'}
-                  <span className="text-[13px] text-muted-foreground font-normal ml-2">
-                    {formatOpportunityLabel(lead)} &middot; {formatDate(lead.lead_date)}
+                  <span className="text-[12px] text-muted-foreground font-normal ml-2 tabular-nums">
+                    {formatOpportunityLabel(lead)} · {formatDate(lead.lead_date)}
                   </span>
                 </SheetTitle>
               </SheetHeader>
-              {lead.profile && (
-                <div className="mt-0.5">
-                  <ProfileLabel profile={lead.profile} />
-                </div>
-              )}
-
-              {/* Compact stats row */}
-              <div className="flex items-center gap-3 mt-3 flex-wrap">
+              <div className="flex items-center gap-3 mt-2 flex-wrap text-[13px]">
                 {lead.funnel_stage && <FunnelStageBadge stage={lead.funnel_stage} />}
-                {lead.channel && <ChannelBadge channel={lead.channel} />}
-                {lead.job_value != null && lead.job_value > 0 && (
-                  <span className="text-[13px] font-medium">{formatCurrency(lead.job_value)}</span>
-                )}
-                {speedToLead != null && (
-                  <span className="text-[13px] text-muted-foreground">
-                    Speed to lead: {Math.round(speedToLead)}m
-                  </span>
-                )}
-                {lead.business_hours_flag === 'After Hours' && (
-                  <Badge variant="secondary" className="bg-orange-100 text-orange-800 font-medium text-xs">After Hours</Badge>
-                )}
+                {lead.job_value != null && lead.job_value > 0 && <span className="font-medium tabular-nums">{formatCurrency(lead.job_value)}</span>}
+                {lead.business_hours_flag === 'After Hours' && <Badge variant="secondary" className="bg-orange-100 text-orange-800 text-xs">After Hours</Badge>}
               </div>
-
             </div>
 
             {/* Scrollable body */}
             <div className="flex-1 overflow-y-auto">
               {/* Contact info */}
-              <div className="px-5 py-3 flex gap-6 text-[13px] border-b">
-                {lead.phone_norm && <div><span className="text-muted-foreground">Phone</span> <span className="ml-1">{formatPhone(lead.phone_norm)}</span></div>}
+              <div className="px-5 py-2 flex gap-5 text-[13px] border-b">
+                {lead.phone_norm && <div><span className="text-muted-foreground">Phone</span> <span className="ml-1 tabular-nums">{formatPhone(lead.phone_norm)}</span></div>}
                 {lead.email && <div><span className="text-muted-foreground">Email</span> <span className="ml-1">{lead.email}</span></div>}
                 {lead.suburb && <div><span className="text-muted-foreground">Suburb</span> <span className="ml-1">{lead.suburb}</span></div>}
               </div>
 
-              {/* Converted job bar — derived from job history, closest job within 30 days of lead */}
+              {/* Converted job bar */}
               {convertedJob && (() => {
-                const isActive = convertedJob.job_source === 'active'
-                const bg = isActive ? 'bg-blue-50' : 'bg-green-50'
-                const text = isActive ? 'text-blue-800' : 'text-green-800'
-                const textLight = isActive ? 'text-blue-700' : 'text-green-700'
-                const dot = isActive ? 'text-blue-400' : 'text-green-400'
-                const badgeCls = isActive ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'
-                const desc = stripHtml(convertedJob.description)
-                const hasDetail = !!(desc || convertedJob.task_notes)
-                const valueDisplay = convertedJob.task_invoices_total_ex && convertedJob.task_invoices_total_ex > 0
-                  ? formatCurrency(convertedJob.task_invoices_total_ex)
-                  : convertedJob.quote_totalex && convertedJob.quote_totalex > 0
-                    ? `Quote: ${formatCurrency(convertedJob.quote_totalex)}`
-                    : null
-
+                const active = convertedJob.job_source === 'active'
+                const bg = active ? 'bg-blue-50' : 'bg-green-50'
+                const txt = active ? 'text-blue-800' : 'text-green-800'
+                const val = convertedJob.task_invoices_total_ex && convertedJob.task_invoices_total_ex > 0
+                  ? formatCurrency(convertedJob.task_invoices_total_ex) : null
                 return (
-                  <div className={`border-b ${bg}`}>
-                    <div className="px-5 py-2.5 flex items-center gap-2 text-[13px]">
-                      <span className={`font-semibold ${text}`}>Job #{convertedJob.jobnumber}</span>
-                      <span className={dot}>&middot;</span>
-                      {(convertedJob.primary_work_type || convertedJob.task_type) && (
-                        <><span className={textLight}>{convertedJob.primary_work_type || convertedJob.task_type}</span><span className={dot}>&middot;</span></>
-                      )}
-                      <Badge variant="secondary" className={`font-medium text-xs ${badgeCls}`}>{convertedJob.display_status}</Badge>
-                      {(convertedJob.job_address || convertedJob.job_suburb) && (
-                        <>
-                          <span className={dot}>&middot;</span>
-                          <span className={textLight}>
-                            {convertedJob.job_address && convertedJob.job_suburb && convertedJob.job_address.includes(convertedJob.job_suburb)
-                              ? convertedJob.job_address
-                              : [convertedJob.job_address, convertedJob.job_suburb].filter(Boolean).join(', ')}
-                          </span>
-                        </>
-                      )}
-                      {valueDisplay && (
-                        <><span className={dot}>&middot;</span><span className={`font-semibold ${text}`}>{valueDisplay}</span></>
-                      )}
-                    </div>
-                    {hasDetail && (
-                      <div className="px-5 pb-3 space-y-2">
-                        {desc && (
-                          <p className="text-[12px] text-muted-foreground whitespace-pre-wrap leading-relaxed">{desc}</p>
-                        )}
-                        {convertedJob.task_notes && (
-                          <div className="text-[12px] space-y-1">
-                            <span className="font-semibold text-muted-foreground">Notes:</span>
-                            <div className="whitespace-pre-wrap text-muted-foreground leading-relaxed pl-2 border-l-2 border-muted">
-                              {convertedJob.task_notes}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                  <div className={`px-5 py-2 border-b ${bg} text-[13px] flex items-center gap-2`}>
+                    <span className={`font-semibold ${txt}`}>Job #{convertedJob.jobnumber}</span>
+                    {(convertedJob.primary_work_type || convertedJob.task_type) && <span className={active ? 'text-blue-700' : 'text-green-700'}>{convertedJob.primary_work_type || convertedJob.task_type}</span>}
+                    <Badge variant="secondary" className={`text-xs ${active ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>{convertedJob.display_status}</Badge>
+                    {val && <span className={`font-semibold ${txt} tabular-nums`}>{val}</span>}
                   </div>
                 )
               })()}
 
-              {/* Classification */}
-              <LeadClassification lead={lead} onClassify={onClassify} />
-
-              {/* Interaction Timeline */}
+              {/* Interactions — inline expand */}
               <div className="px-5 py-3">
-                <h3 className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                  Interactions
-                </h3>
+                <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.05em] mb-2">Interactions</h3>
                 {loading ? (
-                  <div className="space-y-2">
-                    <Skeleton className="h-8 w-full" />
-                    <Skeleton className="h-8 w-full" />
-                    <Skeleton className="h-8 w-3/4" />
-                  </div>
+                  <div className="space-y-2"><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-full" /></div>
                 ) : !interactions?.length ? (
                   <p className="text-[13px] text-muted-foreground py-2">
                     {lead.captured ? 'Captured — interaction detail not yet linked' : 'No interactions recorded.'}
                   </p>
-                ) : (
-                  <table className="w-full text-[13px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
-                    <thead>
-                      <tr>
-                        <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3 w-8"></th>
-                        <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Date</th>
-                        <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Time</th>
-                        <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Operator</th>
-                        <th className="text-right font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-1">Dur</th>
-                        <th className="pb-1.5 w-5"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {interactions.map((ix, i) => (
-                        <tr
-                          key={i}
-                          className="cursor-pointer hover:bg-muted/40 transition-colors group"
-                          onClick={() => handleInteractionClick(ix)}
-                        >
-                          <td className="py-1.5 pr-3 border-t border-muted/60">
-                            <InteractionIcon type={ix.interaction_type} />
-                          </td>
-                          <td className="py-1.5 pr-3 whitespace-nowrap border-t border-muted/60">
-                            {formatDate(ix.interaction_date, 'd MMM')}
-                          </td>
-                          <td className="py-1.5 pr-3 whitespace-nowrap border-t border-muted/60">
-                            {ix.interaction_time || '—'}
-                          </td>
-                          <td className="py-1.5 pr-3 border-t border-muted/60">
-                            {ix.interaction_operator || '—'}
-                          </td>
-                          <td className="py-1.5 pr-1 text-right whitespace-nowrap border-t border-muted/60 text-muted-foreground">
-                            {ix.interaction_duration_seconds
-                              ? `${Math.floor(ix.interaction_duration_seconds / 60)}m${ix.interaction_duration_seconds % 60 ? ` ${ix.interaction_duration_seconds % 60}s` : ''}`
-                              : ''}
-                          </td>
-                          <td className="py-1.5 pl-1 border-t border-muted/60">
-                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/50 group-hover:text-foreground transition-colors" />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
+                ) : interactions.map((ix, i) => {
+                  const ixId = ix.interaction_id || ix.call_id || String(i)
+                  const isExpanded = expandedIx.has(ixId)
+                  return (
+                    <div key={ixId} className="border-t border-muted/50">
+                      <div
+                        className="flex items-center gap-2 py-1.5 px-1 cursor-pointer hover:bg-muted/30 transition-colors text-[13px]"
+                        onClick={() => toggleIx(ixId)}
+                      >
+                        <InteractionIcon type={ix.interaction_type} />
+                        <span className="tabular-nums text-muted-foreground">{formatDate(ix.interaction_date, 'd MMM')}</span>
+                        <span className="tabular-nums text-muted-foreground">{ix.interaction_time || ''}</span>
+                        <span className="text-foreground">{ix.interaction_operator || ''}</span>
+                        {ix.interaction_duration_seconds ? (
+                          <span className="text-muted-foreground tabular-nums ml-auto">
+                            {Math.floor(ix.interaction_duration_seconds / 60)}m{ix.interaction_duration_seconds % 60 ? ` ${ix.interaction_duration_seconds % 60}s` : ''}
+                          </span>
+                        ) : <span className="ml-auto" />}
+                        <ChevronDown className={`h-3.5 w-3.5 text-muted-foreground/50 transition-transform ${isExpanded ? '' : '-rotate-90'}`} />
+                      </div>
+                      {isExpanded && <InlineInteractionDetail ix={ix} lead={lead} />}
+                    </div>
+                  )
+                })}
               </div>
 
               <Separator />
 
               {/* Job History */}
               <div className="px-5 py-3">
-                <h3 className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                  Job History
-                </h3>
+                <h3 className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.05em] mb-2">Job History</h3>
                 {jobHistoryLoading ? (
-                  <div className="space-y-2">
-                    <Skeleton className="h-8 w-full" />
-                    <Skeleton className="h-8 w-full" />
-                  </div>
+                  <div className="space-y-2"><Skeleton className="h-8 w-full" /><Skeleton className="h-8 w-full" /></div>
                 ) : !jobHistory?.length ? (
                   <p className="text-[13px] text-muted-foreground py-2">No job history found.</p>
                 ) : (
                   <table className="w-full text-[13px]" style={{ borderCollapse: 'separate', borderSpacing: 0 }}>
                     <thead>
                       <tr>
-                        <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Date</th>
-                        <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Job #</th>
-                        <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Type</th>
-                        <th className="text-left font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5 pr-3">Status</th>
-                        <th className="text-right font-medium text-muted-foreground text-[11px] uppercase tracking-wider pb-1.5">Value</th>
+                        <th className="text-left text-[11px] uppercase tracking-[0.05em] font-medium text-muted-foreground pb-1 pr-3">Date</th>
+                        <th className="text-left text-[11px] uppercase tracking-[0.05em] font-medium text-muted-foreground pb-1 pr-3">Job #</th>
+                        <th className="text-left text-[11px] uppercase tracking-[0.05em] font-medium text-muted-foreground pb-1 pr-3">Type</th>
+                        <th className="text-left text-[11px] uppercase tracking-[0.05em] font-medium text-muted-foreground pb-1 pr-3">Status</th>
+                        <th className="text-right text-[11px] uppercase tracking-[0.05em] font-medium text-muted-foreground pb-1">Value</th>
                       </tr>
                     </thead>
                     <tbody>
                       {jobHistory.map((job, i) => (
-                        <tr key={i} className={`hover:bg-muted/40 transition-colors ${job.job_source === 'active' ? 'bg-blue-50/50' : ''}`}>
-                          <td className="py-1.5 pr-3 whitespace-nowrap border-t border-muted/60">
-                            {formatDate(job.requested_date, 'd MMM yyyy')}
-                          </td>
-                          <td className="py-1.5 pr-3 border-t border-muted/60 font-medium">
-                            {job.jobnumber}
-                          </td>
-                          <td className="py-1.5 pr-3 border-t border-muted/60">
-                            {job.primary_work_type || job.task_type || '—'}
-                          </td>
-                          <td className="py-1.5 pr-3 border-t border-muted/60">
+                        <tr key={i} className={`hover:bg-muted/30 ${job.job_source === 'active' ? 'bg-blue-50/50' : ''}`}>
+                          <td className="py-1 pr-3 border-t border-muted/50 tabular-nums">{formatDate(job.requested_date, 'd MMM yyyy')}</td>
+                          <td className="py-1 pr-3 border-t border-muted/50 font-medium tabular-nums">{job.jobnumber}</td>
+                          <td className="py-1 pr-3 border-t border-muted/50">{job.primary_work_type || job.task_type || '—'}</td>
+                          <td className="py-1 pr-3 border-t border-muted/50">
                             {job.job_source === 'active'
-                              ? <Badge variant="secondary" className="bg-blue-100 text-blue-800 font-medium text-xs">{job.display_status || 'Active'}</Badge>
+                              ? <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-xs">{job.display_status || 'Active'}</Badge>
                               : (job.display_status || '—')}
                           </td>
-                          <td className="py-1.5 text-right border-t border-muted/60">
+                          <td className="py-1 text-right border-t border-muted/50 tabular-nums">
                             {job.task_invoices_total_ex && job.task_invoices_total_ex > 0
                               ? formatCurrency(job.task_invoices_total_ex)
                               : job.quote_totalex && job.quote_totalex > 0
@@ -606,70 +355,48 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
 
               <Separator />
 
-              {/* Notes — read + write */}
+              {/* Notes */}
               <div className="px-5 py-3">
-                <button
-                  className="flex items-center gap-1 text-[12px] font-semibold text-muted-foreground uppercase tracking-wider"
-                  onClick={() => setNoteOpen(!noteOpen)}
-                >
+                <button className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground uppercase tracking-[0.05em]" onClick={() => setNoteOpen(!noteOpen)}>
                   <ChevronDown className={`h-3.5 w-3.5 transition-transform ${noteOpen ? '' : '-rotate-90'}`} />
                   Notes {notes.length > 0 && `(${notes.length})`}
                 </button>
                 {noteOpen && (
                   <div className="mt-2 space-y-2">
-                    {/* Existing notes */}
-                    {notesLoading ? (
-                      <p className="text-[12px] text-muted-foreground">Loading...</p>
-                    ) : notes.length > 0 ? (
+                    {notesLoading ? <p className="text-[12px] text-muted-foreground">Loading...</p>
+                    : notes.length > 0 ? (
                       <div className="space-y-1.5 mb-2">
                         {notes.map((n) => (
                           <div key={n.id} className="text-[12px] bg-muted/40 rounded p-2">
                             <span className="text-muted-foreground">
-                              {n.created_at?._seconds
-                                ? new Date(n.created_at._seconds * 1000).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' })
-                                : ''}
-                              {' · '}{n.created_by || 'admin'}
+                              {n.created_at?._seconds ? new Date(n.created_at._seconds * 1000).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : ''}{' · '}{n.created_by || 'admin'}
                             </span>
                             <div className="mt-0.5">{n.note_text}</div>
                           </div>
                         ))}
                       </div>
                     ) : null}
-                    {/* Write */}
                     <div className="flex gap-2">
-                      <Textarea
-                        placeholder="Write a note..."
-                        value={noteText}
-                        onChange={(e) => setNoteText(e.target.value)}
-                        className="flex-1 text-[13px]"
-                        rows={2}
-                      />
-                      <Button
-                        size="sm"
-                        disabled={!noteText.trim() || saving}
-                        onClick={async () => {
-                          setSaving(true)
-                          await authFetch(`/api/leads/${lead.lead_id}/notes`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ note_text: noteText.trim() }),
-                          })
-                          setNoteText('')
-                          // Refresh notes
-                          const res = await authFetch(`/api/leads/${lead.lead_id}/notes`)
-                          setNotes(await res.json())
-                          setSaving(false)
-                        }}
-                      >
-                        {saving ? 'Saving...' : 'Save'}
-                      </Button>
+                      <Textarea placeholder="Write a note..." value={noteText} onChange={(e) => setNoteText(e.target.value)} className="flex-1 text-[13px]" rows={2} />
+                      <Button size="sm" disabled={!noteText.trim() || saving} onClick={async () => {
+                        setSaving(true)
+                        await authFetch(`/api/leads/${lead.lead_id}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ note_text: noteText.trim() }) })
+                        setNoteText('')
+                        const r = await authFetch(`/api/leads/${lead.lead_id}/notes`); setNotes(await r.json())
+                        setSaving(false)
+                      }}>{saving ? 'Saving...' : 'Save'}</Button>
                     </div>
                   </div>
                 )}
               </div>
             </div>
           </div>
-        )}
+
+          {/* ── RIGHT: fixed classification panel ── */}
+          <div className="w-[280px] shrink-0 overflow-y-auto bg-muted/10">
+            <LeadClassification lead={lead} onClassify={onClassify} />
+          </div>
+        </div>
       </SheetContent>
     </Sheet>
   )

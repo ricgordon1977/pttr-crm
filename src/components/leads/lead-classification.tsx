@@ -134,10 +134,10 @@ export function LeadClassification({ lead, onClassify }: Props) {
   if (!loaded) return <div className="px-4 py-2 text-[11px] text-muted-foreground">Loading...</div>
 
   return (
-    <div className="px-4 py-2 border-b space-y-1">
+    <div className="px-3 py-3 space-y-2">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Classification</span>
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.05em]">Classification</span>
         {saving && <span className="text-[10px] text-blue-500">Saving...</span>}
         {isOverridden && (
           <button
@@ -156,15 +156,15 @@ export function LeadClassification({ lead, onClassify }: Props) {
         </div>
       )}
 
-      {/* Flat taxonomy */}
+      {/* Vertical taxonomy */}
       {TAXONOMY.map(({ stage, subStatuses }) => {
         const colors = STAGE_COLORS[stage] || STAGE_COLORS['Not Captured']
         return (
-          <div key={stage} className="flex items-start gap-2">
-            <span className={`text-[10px] font-semibold uppercase tracking-wider w-[90px] shrink-0 pt-[3px] ${colors.header}`}>
-              {stage === 'Not Captured' ? 'Not Capt.' : stage === 'Not Quotable' ? 'Not Quot.' : stage}
-            </span>
-            <div className="flex flex-wrap gap-[3px]">
+          <div key={stage}>
+            <div className={`text-[10px] font-semibold uppercase tracking-[0.05em] mb-1 ${colors.header}`}>
+              {stage}
+            </div>
+            <div className="flex flex-wrap gap-[3px] mb-2">
               {subStatuses.map(({ label }) => {
                 const isActive = effective.stage === stage && effective.sub_status === label
                 const isAuto = isAutoItem(lead, stage, label)
@@ -192,12 +192,12 @@ export function LeadClassification({ lead, onClassify }: Props) {
         )
       })}
 
-      {/* Loss reason — inline, only when applicable */}
+      {/* Loss reason */}
       {showLossReason && (
-        <div className="flex items-start gap-2 pt-1 border-t border-muted/40 mt-1">
-          <span className="text-[10px] font-semibold uppercase tracking-wider w-[90px] shrink-0 pt-[3px] text-muted-foreground">
-            Loss reason
-          </span>
+        <div className="pt-1 border-t border-muted/40">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground mb-1">
+            Loss Reason
+          </div>
           <div className="flex flex-wrap gap-[3px]">
             {LOSS_REASONS.map(lr => (
               <button
@@ -219,8 +219,8 @@ export function LeadClassification({ lead, onClassify }: Props) {
 
       {/* Note for "Other" */}
       {effective.sub_status === 'Other' && (
-        <div className="flex items-start gap-2">
-          <span className="text-[10px] font-semibold uppercase tracking-wider w-[90px] shrink-0 pt-[3px] text-muted-foreground">Note</span>
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground mb-1">Note</div>
           <input
             type="text"
             className="flex-1 text-[11px] border rounded px-2 py-0.5"
