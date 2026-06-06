@@ -117,7 +117,7 @@ export async function GET(
         const wcId = formId.replace('wc-form-', '')
         const rows = await query(`
           SELECT
-            date_created_sydney AS submitted_at,
+            DATETIME(date_created, 'Australia/Sydney') AS submitted_at,
             'Form Submission' AS subject,
             contact_name, contact_phone_number AS phone, contact_email_address AS email_address,
             city, state, country,
