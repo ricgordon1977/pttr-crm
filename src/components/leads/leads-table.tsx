@@ -10,7 +10,7 @@ import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from 
 import {
   UserCheck, PhoneIncoming, FileText, Mail,
   Droplet, Zap, Search, MapPin, ArrowRight, ExternalLink, Globe,
-  Sprout, DollarSign, Users, Minus, Link, CircleDot,
+  Link, CircleDot,
 } from 'lucide-react'
 import type { Lead } from '@/types/database'
 
@@ -23,16 +23,38 @@ function TypeIcon({ leadType }: { leadType: string }) {
   return <span className="text-[13px] text-muted-foreground">{leadType || '—'}</span>
 }
 
-function ChannelIcon({ channel }: { channel: string }) {
-  const ch = channel?.toLowerCase() ?? ''
-  if (ch.includes('direct') && ch.includes('untracked')) return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
-  if (ch.includes('direct') && ch.includes('booking')) return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><ArrowRight className="h-3.5 w-3.5" />Direct Booking</span>
-  if (ch === 'call') return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />Paid/Organic</span>
-  if (ch === 'form') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Globe className="h-3.5 w-3.5" />WC Form</span>
-  if (ch.includes('paid') && ch.includes('quinn')) return <span className="inline-flex items-center gap-1 text-[13px] text-red-600"><DollarSign className="h-3.5 w-3.5" />Quinn Paid</span>
-  if (ch.includes('organic') && ch.includes('landing')) return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><Sprout className="h-3.5 w-3.5" />Quinn Organic</span>
-  if (ch.includes('website') && ch.includes('form')) return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><FileText className="h-3.5 w-3.5" />Website Form</span>
-  return <span className="text-[13px] text-muted-foreground">{channel || '—'}</span>
+function SourceMedium({ source, medium }: { source: string; medium: string }) {
+  const s = (source || '').toLowerCase()
+  const m = (medium || '').toLowerCase()
+
+  // Direct calls — no source/medium of value
+  if ((s === 'direct' || s === '(direct)' || !s) && (m === '(none)' || !m)) {
+    return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
+  }
+
+  // Build icon from source
+  let icon = <Globe className="h-3.5 w-3.5" />
+  let iconColor = 'text-gray-400'
+  if (s === 'google') { icon = <Search className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
+  else if (s === 'gmb') { icon = <MapPin className="h-3.5 w-3.5" />; iconColor = 'text-green-600' }
+  else if (s.includes('bing') || s.includes('yahoo') || s.includes('duckduckgo') || s.includes('ecosia') || s.includes('brave') || s.includes('perplexity')) { icon = <Search className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
+  else if (s.includes('facebook') || s.includes('houzz') || s.includes('yellowpages') || s.includes('localsearch')) { icon = <ExternalLink className="h-3.5 w-3.5" />; iconColor = 'text-purple-600' }
+  else if (s.includes('plumbertotherescue') || s.includes('electriciantotherescue') || s.includes('lp.')) { icon = <Link className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
+
+  // Medium badge
+  const mediumLabel = m === 'cpc' ? 'cpc' : m === 'organic' ? 'organic' : m === 'referral' ? 'referral' : m && m !== '(none)' ? m : null
+  const mediumColor = m === 'cpc' ? 'text-red-600 font-medium' : m === 'organic' ? 'text-green-600' : 'text-muted-foreground'
+
+  // Source display name
+  const sourceLabel = s === '(direct)' ? 'Direct' : s === 'gmb' ? 'GMB' : source || ''
+
+  return (
+    <span className={`inline-flex items-center gap-1 text-[13px] ${iconColor}`}>
+      {icon}
+      <span>{sourceLabel}</span>
+      {mediumLabel && <span className={`text-[11px] ${mediumColor}`}>· {mediumLabel}</span>}
+    </span>
+  )
 }
 
 function ProfileIcon({ profile }: { profile: string }) {
@@ -45,37 +67,7 @@ function ProfileIcon({ profile }: { profile: string }) {
   return <span className="text-[13px] text-muted-foreground">{profile}</span>
 }
 
-function SourceIcon({ source }: { source: string }) {
-  if (!source) return <span className="text-muted-foreground">—</span>
-  const s = source.toLowerCase()
-
-  if (s === 'google') return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />{source}</span>
-  if (s === 'gmb') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><MapPin className="h-3.5 w-3.5" />{source}</span>
-  if (s === '(direct)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
-
-  if (['bing', 'yahoo', 'duckduckgo.com', 'ecosia.org', 'search.brave.com', 'perplexity'].includes(s)) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Search className="h-3.5 w-3.5" />{source}</span>
-  }
-  if (s.includes('chatgpt')) return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Globe className="h-3.5 w-3.5" />{source}</span>
-  if (s.includes('plumbertotherescue') || s.includes('electriciantotherescue') || s.includes('lp.')) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-blue-600"><Link className="h-3.5 w-3.5" />{source}</span>
-  }
-  if (s.includes('facebook') || s.includes('houzz') || s.includes('yelp') || s.includes('yellowpages') || s.includes('localsearch') || s.includes('masterplumbers')) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><ExternalLink className="h-3.5 w-3.5" />{source}</span>
-  }
-  return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Globe className="h-3.5 w-3.5" />{source}</span>
-}
-
-function MediumIcon({ medium }: { medium: string }) {
-  if (!medium) return <span className="text-muted-foreground">—</span>
-  const m = medium.toLowerCase()
-
-  if (m === 'organic') return <span className="inline-flex items-center gap-1 text-[13px] text-green-600"><Sprout className="h-3.5 w-3.5" />{medium}</span>
-  if (m === 'cpc') return <span className="inline-flex items-center gap-1 text-[13px] text-red-600"><DollarSign className="h-3.5 w-3.5" />{medium}</span>
-  if (m === 'referral') return <span className="inline-flex items-center gap-1 text-[13px] text-purple-600"><Users className="h-3.5 w-3.5" />{medium}</span>
-  if (m === '(none)') return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Minus className="h-3.5 w-3.5" />None</span>
-  return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><Globe className="h-3.5 w-3.5" />{medium}</span>
-}
+// SourceIcon and MediumIcon removed — merged into SourceMedium above
 
 interface LeadsTableProps {
   leads: Lead[]
@@ -104,12 +96,18 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       ),
     },
     {
-      id: 'needs_review',
+      id: 'indicators',
       header: '',
       enableColumnFilter: false,
-      cell: ({ row }) => !row.original.is_overridden
-        ? <span title="Needs review"><CircleDot className="h-3 w-3 text-amber-500" /></span>
-        : null,
+      cell: ({ row }) => {
+        const l = row.original
+        return (
+          <span className="inline-flex items-center gap-1">
+            {!l.is_overridden && <span title="Needs review — not yet classified"><CircleDot className="h-3 w-3 text-amber-500" /></span>}
+            {l.is_existing_client && <span title="Existing customer — has prior AroFlo jobs"><UserCheck className="h-3 w-3 text-green-600" /></span>}
+          </span>
+        )
+      },
     },
     {
       accessorKey: 'lead_date',
@@ -118,43 +116,31 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       cell: ({ row }) => formatDate(row.original.lead_date),
     },
     {
-      id: 'existing_client',
-      header: '',
-      enableColumnFilter: false,
-      cell: ({ row }) => row.original.is_existing_client
-        ? <span title="Existing client"><UserCheck className="h-3.5 w-3.5 text-green-600" /></span>
-        : null,
-    },
-    {
       accessorKey: 'lead_id',
-      header: 'Lead ID',
+      header: 'ID',
       enableColumnFilter: false,
       cell: ({ row }) => <span className="text-[12px] font-mono">{formatOpportunityLabel(row.original)}</span>,
     },
     {
       accessorKey: 'funnel_stage',
-      header: 'Funnel Stage',
+      header: 'Status',
       cell: ({ row }) => {
         const l = row.original
         if (!l.funnel_stage) return '—'
+        const sub = l.sub_status || l.dnp_reason
         return (
           <span className="inline-flex items-center gap-1">
             <FunnelStageBadge stage={l.funnel_stage} />
-            {l.is_overridden && <span className="text-[10px] text-muted-foreground/60">✎</span>}
+            {sub && sub !== '--' && <span className="text-[11px] text-muted-foreground/70">{sub}</span>}
+            {l.is_overridden && <span className="text-[10px] text-muted-foreground/50">✎</span>}
           </span>
         )
       },
     },
-    { accessorKey: 'dnp_reason', header: 'Sub-Status', cell: ({ row }) => row.original.sub_status || row.original.dnp_reason || '—' },
     {
       accessorKey: 'lead_type',
       header: 'Type',
       cell: ({ row }) => <TypeIcon leadType={row.original.lead_type} />,
-    },
-    {
-      accessorKey: 'channel',
-      header: 'Channel',
-      cell: ({ row }) => <ChannelIcon channel={row.original.channel} />,
     },
     {
       accessorKey: 'profile',
@@ -163,7 +149,6 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
     },
     { accessorKey: 'contact_name', header: 'Contact' },
     { accessorKey: 'phone_norm', header: 'Phone', cell: ({ row }) => formatPhone(row.original.phone_norm) },
-    { accessorKey: 'email', header: 'Email', cell: ({ row }) => row.original.email ? <span className="text-muted-foreground">{row.original.email}</span> : '—' },
     {
       accessorKey: 'business_hours_flag',
       header: 'AH',
@@ -177,14 +162,10 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       cell: ({ row }) => row.original.operator || '—',
     },
     {
-      accessorKey: 'lead_source',
+      id: 'source',
       header: 'Source',
-      cell: ({ row }) => <SourceIcon source={row.original.lead_source} />,
-    },
-    {
-      accessorKey: 'lead_medium',
-      header: 'Medium',
-      cell: ({ row }) => <MediumIcon medium={row.original.lead_medium} />,
+      accessorFn: (row) => `${row.lead_source || ''} ${row.lead_medium || ''}`,
+      cell: ({ row }) => <SourceMedium source={row.original.lead_source} medium={row.original.lead_medium} />,
     },
     {
       accessorKey: 'job_value',
@@ -243,7 +224,7 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       columns={columns}
       data={searchFiltered}
       filterControls={filterControls}
-      frozenColumns={7}
+      frozenColumns={5}
       enableColumnFilters
     />
   )
