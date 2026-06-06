@@ -171,7 +171,8 @@ export function DataTable<TData, TValue>({
                     <th
                       key={header.id}
                       className={cn(
-                        'h-10 px-2 text-left align-middle font-medium whitespace-nowrap text-foreground border-b',
+                        'h-8 px-2 text-left align-middle font-medium whitespace-nowrap border-b',
+                        'text-[11px] uppercase tracking-[0.05em] text-muted-foreground',
                       )}
                       style={{
                         position: 'sticky',
@@ -218,7 +219,7 @@ export function DataTable<TData, TValue>({
                       return (
                         <td
                           key={cell.id}
-                          className="p-2 align-middle whitespace-nowrap border-b"
+                          className="px-2 py-1 align-middle whitespace-nowrap border-b text-[13px] text-foreground"
                           onClick={() => onRowClick?.(row.original)}
                           style={isFrozen ? {
                             position: 'sticky',

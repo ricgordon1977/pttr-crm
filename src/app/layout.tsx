@@ -1,5 +1,5 @@
 import type { Metadata } from "next"
-import { Bricolage_Grotesque, Hanken_Grotesk, JetBrains_Mono } from "next/font/google"
+import { Bricolage_Grotesque, Inter } from "next/font/google"
 import "./globals.css"
 
 const bricolage = Bricolage_Grotesque({
@@ -8,16 +8,9 @@ const bricolage = Bricolage_Grotesque({
   weight: ["400", "500", "600", "700"],
 })
 
-const hanken = Hanken_Grotesk({
+const inter = Inter({
   variable: "--font-sans",
   subsets: ["latin"],
-  weight: ["300", "400", "500", "600"],
-})
-
-const jetbrains = JetBrains_Mono({
-  variable: "--font-mono",
-  subsets: ["latin"],
-  weight: ["400", "500"],
 })
 
 export const metadata: Metadata = {
@@ -32,7 +25,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${bricolage.variable} ${hanken.variable} ${jetbrains.variable} antialiased`}>
+      <body className={`${bricolage.variable} ${inter.variable} antialiased`}>
         {children}
       </body>
     </html>

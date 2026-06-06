@@ -10,7 +10,7 @@ import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from 
 import {
   UserCheck, PhoneIncoming, FileText, Mail,
   Droplet, Zap, Search, MapPin, ArrowRight, ExternalLink, Globe,
-  Link, CircleDot,
+  CircleDot,
 } from 'lucide-react'
 import type { Lead } from '@/types/database'
 
@@ -28,13 +28,11 @@ function SourceLabel({ source }: { source: string }) {
   if (s === 'direct' || s === '(direct)' || !s) return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
   let icon = <Globe className="h-3.5 w-3.5" />
   let iconColor = 'text-gray-400'
-  if (s === 'google') { icon = <Search className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
-  else if (s === 'gmb') { icon = <MapPin className="h-3.5 w-3.5" />; iconColor = 'text-green-600' }
-  else if (s.includes('bing') || s.includes('yahoo') || s.includes('duckduckgo') || s.includes('ecosia') || s.includes('brave') || s.includes('perplexity')) { icon = <Search className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
-  else if (s.includes('facebook') || s.includes('houzz') || s.includes('yellowpages') || s.includes('localsearch')) { icon = <ExternalLink className="h-3.5 w-3.5" />; iconColor = 'text-purple-600' }
-  else if (s.includes('plumbertotherescue') || s.includes('electriciantotherescue') || s.includes('lp.')) { icon = <Link className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
   const label = s === 'gmb' ? 'GMB' : source || ''
-  return <span className={`inline-flex items-center gap-1 text-[13px] ${iconColor}`}>{icon}<span>{label}</span></span>
+  if (s === 'google') return <span className="inline-flex items-center gap-1 text-[13px] text-foreground"><Search className="h-3.5 w-3.5 text-muted-foreground" />{label}</span>
+  if (s === 'gmb') return <span className="inline-flex items-center gap-1 text-[13px] text-foreground"><MapPin className="h-3.5 w-3.5 text-green-600" />{label}</span>
+  if (s.includes('facebook') || s.includes('houzz') || s.includes('yellowpages') || s.includes('localsearch')) return <span className="inline-flex items-center gap-1 text-[13px] text-foreground"><ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />{label}</span>
+  return <span className="inline-flex items-center gap-1 text-[13px] text-foreground"><Globe className="h-3.5 w-3.5 text-muted-foreground" />{label}</span>
 }
 
 function MediumLabel({ medium }: { medium: string }) {
@@ -102,13 +100,13 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       accessorKey: 'lead_date',
       header: 'Date',
       enableColumnFilter: false,
-      cell: ({ row }) => formatDate(row.original.lead_date),
+      cell: ({ row }) => <span className="tabular-nums">{formatDate(row.original.lead_date)}</span>,
     },
     {
       accessorKey: 'lead_id',
       header: 'ID',
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="text-[12px] font-[family-name:var(--font-mono)] text-muted-foreground">{formatOpportunityLabel(row.original)}</span>,
+      cell: ({ row }) => <span className="text-[12px] tabular-nums text-muted-foreground">{formatOpportunityLabel(row.original)}</span>,
     },
     {
       accessorKey: 'funnel_stage',
@@ -137,7 +135,7 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       cell: ({ row }) => row.original.profile ? <ProfileIcon profile={row.original.profile} /> : '—',
     },
     { accessorKey: 'contact_name', header: 'Contact' },
-    { accessorKey: 'phone_norm', header: 'Phone', cell: ({ row }) => <span className="font-[family-name:var(--font-mono)] text-[12px]">{formatPhone(row.original.phone_norm)}</span> },
+    { accessorKey: 'phone_norm', header: 'Phone', cell: ({ row }) => <span className="text-[13px] tabular-nums">{formatPhone(row.original.phone_norm)}</span> },
     {
       accessorKey: 'business_hours_flag',
       header: 'AH',
@@ -164,7 +162,7 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       accessorKey: 'job_value',
       header: 'Value',
       enableColumnFilter: false,
-      cell: ({ row }) => <span className="font-[family-name:var(--font-mono)] text-[12px]">{formatCurrency(row.original.job_value)}</span>,
+      cell: ({ row }) => <span className="text-[13px] tabular-nums">{formatCurrency(row.original.job_value)}</span>,
     },
   ]
 
