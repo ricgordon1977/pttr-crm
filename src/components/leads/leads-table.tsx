@@ -23,16 +23,9 @@ function TypeIcon({ leadType }: { leadType: string }) {
   return <span className="text-[13px] text-muted-foreground">{leadType || '—'}</span>
 }
 
-function SourceMedium({ source, medium }: { source: string; medium: string }) {
+function SourceLabel({ source }: { source: string }) {
   const s = (source || '').toLowerCase()
-  const m = (medium || '').toLowerCase()
-
-  // Direct calls — no source/medium of value
-  if ((s === 'direct' || s === '(direct)' || !s) && (m === '(none)' || !m)) {
-    return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
-  }
-
-  // Build icon from source
+  if (s === 'direct' || s === '(direct)' || !s) return <span className="inline-flex items-center gap-1 text-[13px] text-gray-400"><ArrowRight className="h-3.5 w-3.5" />Direct</span>
   let icon = <Globe className="h-3.5 w-3.5" />
   let iconColor = 'text-gray-400'
   if (s === 'google') { icon = <Search className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
@@ -40,21 +33,17 @@ function SourceMedium({ source, medium }: { source: string; medium: string }) {
   else if (s.includes('bing') || s.includes('yahoo') || s.includes('duckduckgo') || s.includes('ecosia') || s.includes('brave') || s.includes('perplexity')) { icon = <Search className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
   else if (s.includes('facebook') || s.includes('houzz') || s.includes('yellowpages') || s.includes('localsearch')) { icon = <ExternalLink className="h-3.5 w-3.5" />; iconColor = 'text-purple-600' }
   else if (s.includes('plumbertotherescue') || s.includes('electriciantotherescue') || s.includes('lp.')) { icon = <Link className="h-3.5 w-3.5" />; iconColor = 'text-blue-600' }
+  const label = s === 'gmb' ? 'GMB' : source || ''
+  return <span className={`inline-flex items-center gap-1 text-[13px] ${iconColor}`}>{icon}<span>{label}</span></span>
+}
 
-  // Medium badge
-  const mediumLabel = m === 'cpc' ? 'cpc' : m === 'organic' ? 'organic' : m === 'referral' ? 'referral' : m && m !== '(none)' ? m : null
-  const mediumColor = m === 'cpc' ? 'text-red-600 font-medium' : m === 'organic' ? 'text-green-600' : 'text-muted-foreground'
-
-  // Source display name
-  const sourceLabel = s === '(direct)' ? 'Direct' : s === 'gmb' ? 'GMB' : source || ''
-
-  return (
-    <span className={`inline-flex items-center gap-1 text-[13px] ${iconColor}`}>
-      {icon}
-      <span>{sourceLabel}</span>
-      {mediumLabel && <span className={`text-[11px] ${mediumColor}`}>· {mediumLabel}</span>}
-    </span>
-  )
+function MediumLabel({ medium }: { medium: string }) {
+  const m = (medium || '').toLowerCase()
+  if (m === 'cpc') return <span className="text-[13px] text-red-600 font-medium">cpc</span>
+  if (m === 'organic') return <span className="text-[13px] text-green-600">organic</span>
+  if (m === 'referral') return <span className="text-[13px] text-purple-600">referral</span>
+  if (m === '(none)' || !m) return <span className="text-[13px] text-muted-foreground/50">—</span>
+  return <span className="text-[13px] text-muted-foreground">{medium}</span>
 }
 
 function ProfileIcon({ profile }: { profile: string }) {
@@ -162,10 +151,14 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       cell: ({ row }) => row.original.operator || '—',
     },
     {
-      id: 'source',
+      accessorKey: 'lead_source',
       header: 'Source',
-      accessorFn: (row) => `${row.lead_source || ''} ${row.lead_medium || ''}`,
-      cell: ({ row }) => <SourceMedium source={row.original.lead_source} medium={row.original.lead_medium} />,
+      cell: ({ row }) => <SourceLabel source={row.original.lead_source} />,
+    },
+    {
+      accessorKey: 'lead_medium',
+      header: 'Medium',
+      cell: ({ row }) => <MediumLabel medium={row.original.lead_medium} />,
     },
     {
       accessorKey: 'job_value',
