@@ -16,7 +16,7 @@ export async function GET(
   const rows = await query(`
     SELECT
       cd.contactid AS contact_id,
-      CONCAT(COALESCE(cd.firstname, ''), ' ', COALESCE(cd.lastname, '')) AS contact_name,
+      CONCAT(COALESCE(cd.lastname, ''), ', ', COALESCE(cd.firstname, '')) AS contact_name,
       cd.phone,
       cd.mobile,
       cd.email
