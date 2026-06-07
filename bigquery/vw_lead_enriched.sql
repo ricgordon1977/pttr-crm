@@ -103,11 +103,10 @@ SELECT
   -- job_value: sum across ALL jobs in the cluster (multi-job), else primary job
   COALESCE(all_jobs.total_value, SAFE_CAST(tc.task_invoices_total_ex AS NUMERIC)) AS job_value,
   o.job_status,
-  -- completed: TRUE if ANY job in the cluster is Archived+Completed+invoiced>0
+  -- completed: TRUE if ANY job in the cluster is Completed (Archived or not)
   CASE
     WHEN o.job_count > 1 AND COALESCE(all_jobs.any_completed, FALSE) THEN TRUE
-    WHEN o.job_count <= 1 AND tc.status = 'Archived' AND tc.job_status = 'Completed'
-      AND SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) > 0 THEN TRUE
+    WHEN o.job_count <= 1 AND tc.job_status = 'Completed' THEN TRUE
     WHEN o.jobnumber IS NOT NULL THEN FALSE
     ELSE NULL
   END AS completed,
@@ -115,8 +114,9 @@ SELECT
   -- === Objective funnel stage ===
   CASE
     WHEN o.job_count > 1 AND COALESCE(all_jobs.any_completed, FALSE) THEN 'Paid Job'
-    WHEN o.job_count <= 1 AND tc.status = 'Archived' AND tc.job_status = 'Completed'
+    WHEN o.job_count <= 1 AND tc.job_status = 'Completed'
       AND SAFE_CAST(tc.task_invoices_total_ex AS FLOAT64) > 0 THEN 'Paid Job'
+    WHEN o.job_count <= 1 AND tc.job_status = 'Completed' THEN 'Job Complete'
     WHEN o.jobnumber IS NOT NULL THEN 'Booked'
     WHEN o.call_count > 0 AND o.has_answered_call AND o.max_duration_sec >= 20 THEN 'Captured'
     WHEN o.call_count > 0 OR o.form_count > 0 THEN 'Not Captured'
@@ -184,8 +184,7 @@ LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td
 LEFT JOIN (
   SELECT o2.opportunity_id,
     ROUND(SUM(SAFE_CAST(tc2.task_invoices_total_ex AS NUMERIC)), 2) AS total_value,
-    LOGICAL_OR(tc2.status = 'Archived' AND tc2.job_status = 'Completed'
-      AND SAFE_CAST(tc2.task_invoices_total_ex AS FLOAT64) > 0) AS any_completed
+    LOGICAL_OR(tc2.job_status = 'Completed') AS any_completed
   FROM `pttr-taskdata.ds_crm.opportunities` o2,
     UNNEST(SPLIT(o2.all_jobnumbers, ',')) AS jn
   JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc2 ON TRIM(jn) = tc2.jobnumber
