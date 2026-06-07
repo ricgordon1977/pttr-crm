@@ -173,12 +173,19 @@ export function LeadClassification({ lead, onClassify }: Props) {
       <div className="flex items-center gap-2">
         <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.05em]">Classification</span>
         {saving && <span className="text-[10px] text-blue-500">Saving...</span>}
-        {isOverridden && (
+        {isOverridden ? (
           <button
             className="text-[10px] text-blue-600 hover:underline ml-auto"
             onClick={() => { classify(auto.stage, auto.sub_status); setOverride(null) }}
           >
             Reset to auto
+          </button>
+        ) : (
+          <button
+            className="text-[10px] text-green-600 hover:underline ml-auto"
+            onClick={() => classify(auto.stage, auto.sub_status)}
+          >
+            Mark reviewed
           </button>
         )}
       </div>
