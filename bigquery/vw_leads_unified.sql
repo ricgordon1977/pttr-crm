@@ -326,6 +326,18 @@ email_rows AS (
     form_address,
     form_problem
   FROM email_form_parsed
+  -- Exclude email-parsed forms that duplicate a WC form (same name + ±60s).
+  -- The WC version has better attribution; the email copy would create a split opp.
+  WHERE NOT EXISTS (
+    SELECT 1 FROM form_rows fr
+    WHERE fr.contact_name IS NOT NULL
+      AND LOWER(TRIM(fr.contact_name)) = LOWER(TRIM(INITCAP(TRIM(email_form_parsed.raw_name))))
+      AND ABS(TIMESTAMP_DIFF(
+        fr.lead_timestamp,
+        email_form_parsed.received_at,
+        SECOND
+      )) <= 60
+  )
 )
 
 SELECT * FROM call_rows
