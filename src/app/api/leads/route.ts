@@ -135,5 +135,18 @@ export async function GET(request: Request) {
     }
   })
 
-  return Response.json(merged)
+  // Suppress no_inbound job-only opps when their job has been manually linked
+  // to another opportunity (the manual link is the real inbound for that job).
+  const manuallyClaimedJobs = new Set(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    merged.filter((l: any) => l.manual_job_number && l.lead_id !== `J-${l.manual_job_number}`)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((l: any) => `J-${l.manual_job_number}`)
+  )
+  const filtered = manuallyClaimedJobs.size > 0
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ? merged.filter((l: any) => !manuallyClaimedJobs.has(l.lead_id))
+    : merged
+
+  return Response.json(filtered)
 }
