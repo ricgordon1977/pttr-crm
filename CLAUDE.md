@@ -28,6 +28,18 @@ Two customer types:
   - `gd_WhatConverts` — call/lead tracking (WhatConverts API)
 - **Secrets**: GCP Secret Manager (never read local secrets files)
 - **BigQuery commands** must use `--location=US`
+- **Firestore**: lives in project **`pettr-data`** (Firebase), NOT `pttr-taskdata`.
+  The GCP Cloud Firestore API is **disabled** on pttr-taskdata — you MUST use
+  `firebase-admin` (Firebase path), not `google-cloud-firestore`, to reach
+  Firestore from pttr-taskdata services.
+  - Secret `firebase-admin-sa` (in pttr-taskdata Secret Manager) contains the
+    pettr-data Firebase admin service-account JSON
+    (`firebase-adminsdk-fbsvc@pettr-data.iam.gserviceaccount.com`).
+  - The orchestrator's `_get_firestore_db()` reads this secret and initialises
+    `firebase-admin`. If the secret is missing, the after-hours auto-classify
+    step fails.
+  - The CRM app (Next.js) uses its own Firebase Admin credentials via env vars
+    (`FIREBASE_ADMIN_PRIVATE_KEY`, `FIREBASE_ADMIN_CLIENT_EMAIL`).
 
 ## §3 Data Sources + Call Routing — BUILT
 
