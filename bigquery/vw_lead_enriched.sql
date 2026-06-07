@@ -49,8 +49,16 @@ SELECT
   o.is_existing_customer,
   o.is_no_inbound_enquiry,
 
-  -- Suburb (WC city → AroFlo suburb → form-parsed suburb → prior client suburb)
-  COALESCE(NULLIF(TRIM(wc.city), ''), NULLIF(TRIM(tc.address_suburb), ''), ef.form_suburb, NULLIF(TRIM(prior_client.address_suburb), '')) AS suburb,
+  -- Suburb (WC city → AroFlo suburb → task location → form-parsed → prior client)
+  COALESCE(
+    NULLIF(TRIM(wc.city), ''),
+    NULLIF(TRIM(tc.address_suburb), ''),
+    NULLIF(TRIM(td.location_suburb), ''),
+    -- Extract suburb from tasklocation_locationname (format: "street, Suburb")
+    NULLIF(TRIM(REGEXP_EXTRACT(td.tasklocation_locationname, r',\s*([^,]+)$')), ''),
+    ef.form_suburb,
+    NULLIF(TRIM(prior_client.address_suburb), '')
+  ) AS suburb,
 
   -- Form-specific fields (email-parsed forms only)
   ef.form_address,
@@ -170,6 +178,8 @@ LEFT JOIN `pttr-taskdata.ds_crm.lkp_campaign` lkp_camp
   ON COALESCE(wc.lp_gad_campaignid, o.campaign) = lkp_camp.campaign_id
 LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc
   ON o.jobnumber = tc.jobnumber
+LEFT JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td
+  ON o.jobnumber = td.jobnumber
 -- Aggregate across ALL jobs in multi-job clusters
 LEFT JOIN (
   SELECT o2.opportunity_id,
