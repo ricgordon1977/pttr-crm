@@ -79,7 +79,16 @@ SELECT *,
         AND contact_mobile IS NULL AND site_phone IS NULL
     THEN extract_au_phone(desc_text) ELSE NULL END AS desc_phone,
   CASE WHEN COALESCE(job_email, '') = '' AND contact_email IS NULL AND site_email IS NULL
-    THEN extract_email(desc_text) ELSE NULL END AS desc_email
+    THEN extract_email(desc_text) ELSE NULL END AS desc_email,
+  -- OfficeHQ pager "Caller ID:" phone — always extracted (not gated on structured fields).
+  -- The CSR pastes the pager text into the AroFlo description; the Caller ID is the 8x8
+  -- CDR phone which may differ from the structured contact phone (typos, or customer
+  -- called from a different number than the one they gave the answering service).
+  -- Only matches the specific "Caller ID:" label to avoid extracting unrelated numbers.
+  norm_au_phone(REGEXP_EXTRACT(
+    strip_html(desc_text),
+    r'Caller\s+ID\s*:\s*(\+?\d[\d\s\-\.]{7,15})'
+  )) AS callerid_phone
 FROM raw_jobs;
 
 -- ====== STEP 2: Contact-point mapping ======
@@ -122,7 +131,16 @@ SELECT 'J', event_id, event_ts, desc_phone, 'phone' FROM job_events
 UNION ALL
 -- Description-extracted email (final rung)
 SELECT 'J', event_id, event_ts, desc_email, 'email' FROM job_events
-  WHERE desc_email IS NOT NULL;
+  WHERE desc_email IS NOT NULL
+UNION ALL
+-- OfficeHQ Caller ID phone (always extracted — may differ from structured contact)
+SELECT 'J', event_id, event_ts, callerid_phone, 'phone' FROM job_events
+  WHERE callerid_phone IS NOT NULL
+    AND callerid_phone != COALESCE(id_phone, '')
+    AND callerid_phone != COALESCE(norm_client_phone, '')
+    AND callerid_phone != COALESCE(contact_mobile, '')
+    AND callerid_phone != COALESCE(site_phone, '')
+    AND callerid_phone != COALESCE(desc_phone, '');
 
 -- Prefix event_ids
 CREATE TEMP TABLE prefixed_cp AS
@@ -145,7 +163,8 @@ WHERE (id_phone IS NULL OR id_phone = '')
   AND site_phone IS NULL
   AND site_email IS NULL
   AND desc_phone IS NULL
-  AND desc_email IS NULL;
+  AND desc_email IS NULL
+  AND callerid_phone IS NULL;
 
 -- ====== STEP 3: Edges ======
 CREATE TEMP TABLE bi_edges AS

@@ -26,6 +26,41 @@ export async function GET(request: Request) {
     }
   }
 
+  // Auto-classify after-hours gap calls (<20s) that have no override yet.
+  // These have no content at any source — nothing to review. Write to Firestore
+  // so they clear needs-review. ≥20s gap calls stay unclassified (needs-review)
+  // as an answering-service performance signal.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const autoClassifyBatch: { id: string; data: Record<string, unknown> }[] = []
+  for (const lead of leads as any[]) {
+    if (
+      lead.is_after_hours_gap &&
+      !lead.captured &&
+      !overrideMap[lead.lead_id as string]
+    ) {
+      const data = {
+        opportunity_id: lead.lead_id,
+        stage: 'Not Captured',
+        sub_status: 'Dropped Call',
+        loss_reason: null,
+        note: 'Auto-classified: after-hours gap call <20s, no content at any source',
+        exclude_from_analysis: false,
+        updated_by: 'auto_rule:ah_gap_short',
+        updated_at: new Date(),
+      }
+      autoClassifyBatch.push({ id: lead.lead_id as string, data })
+      overrideMap[lead.lead_id as string] = data
+    }
+  }
+  // Fire-and-forget batch write (don't block response)
+  if (autoClassifyBatch.length > 0) {
+    const batch = adminDb.batch()
+    for (const { id, data } of autoClassifyBatch) {
+      batch.set(adminDb.collection('crm_lead_overrides').doc(id), data)
+    }
+    batch.commit().catch(err => console.error('Auto-classify batch write failed:', err))
+  }
+
   // Merge: override wins for stage/sub_status UNLESS objective facts override.
   // Objective auto-classify beats "Unable to Classify": if BQ says Booked/Completed,
   // the human verdict doesn't hold — the lead auto-flips and exclude_from_analysis clears.

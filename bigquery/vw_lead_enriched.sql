@@ -36,18 +36,21 @@ SELECT
       WHEN UPPER(TRIM(wc.contact_name)) IN ('AUSTRALIA','INTERNATIONAL','NEW ZEALAND','UNITED STATES','UNITED KINGDOM')
       THEN NULL ELSE INITCAP(TRIM(wc.contact_name)) END, ''),
     NULLIF(o.contact_name, ''),
-    NULLIF(tc.client_name, '')
+    NULLIF(tc.client_name, ''),
+    -- Existing-client fallback: resolve name from prior AroFlo jobs matched by phone
+    NULLIF(prior_client.client_name, '')
   ) AS contact_name,
   o.phone,
   COALESCE(
     NULLIF(wc.norm_email, ''),
-    NULLIF(tc.norm_client_email, '')
+    NULLIF(tc.norm_client_email, ''),
+    NULLIF(prior_client.norm_client_email, '')
   ) AS email,
   o.is_existing_customer,
   o.is_no_inbound_enquiry,
 
-  -- Suburb (WC city → AroFlo suburb → form-parsed suburb)
-  COALESCE(NULLIF(TRIM(wc.city), ''), NULLIF(TRIM(tc.address_suburb), ''), ef.form_suburb) AS suburb,
+  -- Suburb (WC city → AroFlo suburb → form-parsed suburb → prior client suburb)
+  COALESCE(NULLIF(TRIM(wc.city), ''), NULLIF(TRIM(tc.address_suburb), ''), ef.form_suburb, NULLIF(TRIM(prior_client.address_suburb), '')) AS suburb,
 
   -- Form-specific fields (email-parsed forms only)
   ef.form_address,
@@ -112,6 +115,41 @@ SELECT
     WHEN o.opp_type = 'no_inbound' AND o.jobnumber IS NOT NULL THEN 'Booked'
     ELSE 'Not Captured'
   END AS funnel_stage,
+
+  -- === After-hours gap detection ===
+  -- Segment (d): after-hours call with NO content at any source.
+  -- Validated: 0% conversion rate across all historical gap calls.
+  -- Used for auto-classification: <20s → Not Captured, ≥20s → Lost/Unresponsive.
+  CASE
+    WHEN NOT COALESCE(o.is_business_hours, TRUE)          -- after hours
+      AND o.call_count > 0                                 -- is a call-type opp
+      AND o.wc_lead_id IS NULL                             -- no WC match
+      AND o.jobnumber IS NULL                              -- no linked job
+      AND o.contact_name IS NULL                           -- no contact from any source (form, WC, AroFlo)
+      AND NOT EXISTS (                                     -- no 8x8 recording
+        SELECT 1 FROM `pttr-taskdata.ds_crm.raw_recordings` rr2
+        JOIN `pttr-taskdata.ds_crm.raw_calls` rc2 ON rr2.call_id = rc2.call_id
+        WHERE rc2.norm_caller_phone = o.phone
+          AND rc2.start_time BETWEEN
+            TIMESTAMP_SUB(o.opportunity_timestamp, INTERVAL 1 DAY)
+            AND TIMESTAMP_ADD(o.opportunity_timestamp, INTERVAL 30 DAY)
+      )
+      AND NOT EXISTS (                                     -- no OHQ email with contact
+        SELECT 1 FROM `pttr-taskdata.ds_crm.raw_emails_received` e
+        WHERE LOWER(e.from_email) LIKE '%myreceptionist%'
+          AND (
+            -- Match E.164 format (+61...) in Caller ID field
+            e.body_preview LIKE CONCAT('%', o.phone, '%')
+            -- Match 0-prefix format (spaces stripped) in Phone field
+            OR REPLACE(e.body_preview, ' ', '') LIKE CONCAT('%', REPLACE(o.phone, '+61', '0'), '%')
+          )
+          AND TIMESTAMP(e.received_at) BETWEEN
+            TIMESTAMP_SUB(o.opportunity_timestamp, INTERVAL 1 MINUTE)
+            AND TIMESTAMP_ADD(o.opportunity_timestamp, INTERVAL 10 MINUTE)
+      )
+    THEN TRUE
+    ELSE FALSE
+  END AS is_after_hours_gap,
 
   -- === Classification (all NULL) ===
   CAST(NULL AS STRING) AS disposition,
@@ -178,4 +216,22 @@ LEFT JOIN (
     AND (form_suburb IS NOT NULL OR form_address IS NOT NULL OR form_problem IS NOT NULL)
 ) ef ON ef.phone = o.phone
   AND ABS(TIMESTAMP_DIFF(ef.lead_timestamp, o.opportunity_timestamp, SECOND)) < 2592000
-  AND ef.rn = 1;
+  AND ef.rn = 1
+-- Existing-client resolution: when is_existing_customer but no job linked to this opp,
+-- resolve the client name/email/suburb from their most recent prior job.
+-- Uses the SAME phone match as is_existing_customer (id_phone + norm_client_mobile).
+LEFT JOIN (
+  SELECT phone, client_name, norm_client_email, address_suburb,
+    ROW_NUMBER() OVER (PARTITION BY phone ORDER BY requested_date_parsed DESC) AS rn
+  FROM (
+    SELECT id_phone AS phone, client_name, norm_client_email, address_suburb, requested_date_parsed
+    FROM `pttr-taskdata.ds_aroflo.tasks_complete`
+    WHERE id_phone IS NOT NULL AND id_phone != '' AND customer_type = 'COD'
+    UNION ALL
+    SELECT norm_client_mobile, client_name, norm_client_email, address_suburb, requested_date_parsed
+    FROM `pttr-taskdata.ds_aroflo.tasks_complete`
+    WHERE norm_client_mobile IS NOT NULL AND norm_client_mobile != '' AND customer_type = 'COD'
+  )
+  WHERE client_name IS NOT NULL AND LOWER(client_name) NOT LIKE '%test%'
+    AND LOWER(client_name) NOT IN ('misc cod', 'misc plumbing', 'misc electrical')
+) prior_client ON prior_client.phone = o.phone AND prior_client.rn = 1;

@@ -72,7 +72,8 @@ export async function getLeads(limit = 500) {
       lead_type,
       campaign_type,
       all_jobnumbers,
-      job_count
+      job_count,
+      is_after_hours_gap
     FROM \`${DS}.vw_lead_enriched\`
     ORDER BY created_at_sydney DESC
     LIMIT @limit
@@ -120,7 +121,8 @@ export async function getLeadDetail(leadId: string) {
       job_count,
       matched_phones,
       matched_emails,
-      is_no_inbound_enquiry
+      is_no_inbound_enquiry,
+      is_after_hours_gap
     FROM \`${DS}.vw_lead_enriched\`
     WHERE opportunity_id = @leadId
   `, { leadId })
@@ -272,10 +274,12 @@ export async function getEmailDetail(leadId: number, dt: string) {
 
 // ─── JOB HISTORY ────────────────────────────────────────────────────────────
 export async function getJobHistory(opportunityId: string) {
-  // Use precomputed all_jobnumbers from the opportunity cluster
+  // Use precomputed all_jobnumbers from the opportunity cluster.
+  // When no linked jobs exist but is_existing_customer, also find prior jobs by phone
+  // (same id_phone/norm_client_mobile match as is_existing_customer).
   return query(`
     WITH opp AS (
-      SELECT all_jobnumbers, matched_phones
+      SELECT all_jobnumbers, matched_phones, phone, is_existing_customer
       FROM \`${DS}.opportunities\`
       WHERE opportunity_id = @opportunityId
     ),
@@ -312,10 +316,31 @@ export async function getJobHistory(opportunityId: string) {
       JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc ON jn.jobnumber = tc.jobnumber
       LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
     ),
+    -- Existing-client prior jobs: when no linked jobs, find all COD jobs by phone
+    -- Uses same match as is_existing_customer (id_phone + norm_client_mobile)
+    prior_client_jobs AS (
+      SELECT tc.jobnumber, tc.requested_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
+             COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
+             COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\\s*(.+)$')) AS job_suburb,
+             td.description,
+             SAFE_CAST(td.quote_totalex AS NUMERIC) AS quote_totalex
+      FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
+      LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
+      WHERE tc.customer_type = 'COD'
+        AND tc.jobnumber NOT IN (SELECT jobnumber FROM job_numbers)
+        AND EXISTS (
+          SELECT 1 FROM opp
+          WHERE opp.all_jobnumbers IS NULL
+            AND opp.is_existing_customer = TRUE
+            AND (tc.id_phone = opp.phone OR tc.norm_client_mobile = opp.phone)
+        )
+    ),
     all_jobs AS (
       SELECT * FROM completed_jobs
       UNION ALL
       SELECT * FROM active_jobs
+      UNION ALL
+      SELECT * FROM prior_client_jobs
     ),
     task_notes_agg AS (
       SELECT jobnumber,

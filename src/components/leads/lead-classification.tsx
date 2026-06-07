@@ -64,8 +64,16 @@ const LOSS_REASON_STAGES = new Set(['Not Booked', 'Booking Cancelled', 'Quote On
 // ─── HELPERS ────────────────────────────────────────────────────────────────
 
 function getAutoPlacement(lead: Lead): { stage: string; sub_status: string } {
+  // Objective override: job linkage always wins
   if (lead.completed) return { stage: 'Booked', sub_status: 'Job Complete' }
   if (lead.booking_status === 'Booked') return { stage: 'Booked', sub_status: 'Job Pending' }
+  // After-hours gap: no WC, no OHQ email, no job, no 8x8 recording (validated 0% conversion)
+  // ≥20s = engaged via answering service, no contact captured → Lost/Unresponsive
+  // <20s = dropped/brief/hangup → Not Captured / Dropped Call
+  if (lead.is_after_hours_gap) {
+    if (lead.captured) return { stage: 'Not Booked', sub_status: 'Lost / Unresponsive' }
+    return { stage: 'Not Captured', sub_status: 'Dropped Call' }
+  }
   if (lead.captured) return { stage: 'Captured', sub_status: '' }
   if (lead.answered && !lead.captured) return { stage: 'Not Captured', sub_status: 'Dropped Call' }
   if (lead.lead_type === 'call' && !lead.answered) return { stage: 'Not Captured', sub_status: 'Unanswered Call' }
@@ -76,6 +84,7 @@ function getAutoPlacement(lead: Lead): { stage: string; sub_status: string } {
 function isAutoItem(lead: Lead, stage: string, ss: string): boolean {
   if (stage === 'Not Captured' && ss === 'Dropped Call') return !!(lead.answered && !lead.captured)
   if (stage === 'Not Captured' && ss === 'Unanswered Call') return !!(lead.lead_type === 'call' && !lead.answered)
+  if (stage === 'Not Booked' && ss === 'Lost / Unresponsive') return !!(lead.is_after_hours_gap && lead.captured)
   if (stage === 'Booked' && ss === 'Job Pending') return !!(lead.booking_status === 'Booked' && !lead.completed)
   if (stage === 'Booked' && ss === 'Job Complete') return !!lead.completed
   return false

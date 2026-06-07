@@ -235,6 +235,9 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
               <SheetHeader className="p-0">
                 <SheetTitle className="text-[18px] font-semibold leading-tight font-[family-name:var(--font-display)]">
                   {lead.contact_name || 'Unknown'}
+                  {lead.is_existing_client && (
+                    <Badge variant="secondary" className="bg-green-100 text-green-800 text-[10px] ml-2 align-middle font-normal">Existing Client</Badge>
+                  )}
                   <span className="text-[12px] text-muted-foreground font-normal ml-2 tabular-nums">
                     {formatOpportunityLabel(lead)} · {formatDate(lead.lead_date)}
                   </span>

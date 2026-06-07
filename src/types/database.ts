@@ -76,6 +76,8 @@ export interface Lead {
   campaign_type: string | null
   all_jobnumbers: string | null
   job_count: number
+  // After-hours gap detection (no content at any source)
+  is_after_hours_gap?: boolean
   // Override fields (merged from Firestore)
   is_overridden?: boolean
   sub_status?: string | null
