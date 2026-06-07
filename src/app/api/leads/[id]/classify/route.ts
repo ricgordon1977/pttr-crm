@@ -21,6 +21,14 @@ export async function POST(
       return Response.json({ ok: true })
     }
 
+    // CSR review flag toggle (separate from classification)
+    if (body.requires_csr_review !== undefined && !body.stage) {
+      await adminDb.collection('crm_lead_overrides').doc(opportunityId).set({
+        requires_csr_review: body.requires_csr_review,
+      }, { merge: true })
+      return Response.json({ ok: true })
+    }
+
     const { stage, sub_status, loss_reason, note, exclude_from_analysis } = body
 
     if (!stage || !sub_status) {

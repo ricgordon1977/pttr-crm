@@ -115,6 +115,7 @@ export function LeadClassification({ lead, onClassify }: Props) {
   const [override, setOverride] = useState<{ stage: string; sub_status: string; loss_reason?: string | null; note?: string | null } | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [csrReview, setCsrReview] = useState(!!lead.requires_csr_review)
 
   const effective = override || { stage: auto.stage, sub_status: auto.sub_status, loss_reason: null, note: null }
   const isOverridden = override !== null
@@ -123,10 +124,12 @@ export function LeadClassification({ lead, onClassify }: Props) {
   useEffect(() => {
     setLoaded(false)
     setOverride(null)
+    setCsrReview(!!lead.requires_csr_review)
     authFetch(`/api/leads/${lead.lead_id}/classify`)
       .then(r => r.json())
       .then(data => {
         if (data && data.stage) setOverride({ stage: data.stage, sub_status: data.sub_status, loss_reason: data.loss_reason, note: data.note })
+        if (data && data.requires_csr_review) setCsrReview(true)
         setLoaded(true)
       })
       .catch(() => setLoaded(true))
@@ -239,14 +242,33 @@ export function LeadClassification({ lead, onClassify }: Props) {
         </div>
       )}
 
-      {/* CSR Review flag */}
-      {lead.requires_csr_review && (
-        <div className="pt-1 border-t border-muted/40">
-          <div className="text-[10px] font-semibold text-amber-700 bg-amber-50 rounded px-2 py-1">
-            Requires CSR Review
-          </div>
-        </div>
-      )}
+      {/* CSR Review flag — toggleable */}
+      <div className="pt-1 border-t border-muted/40">
+        <button
+          disabled={saving}
+          className={`text-[10px] w-full text-left px-2 py-1 rounded transition-colors ${
+            csrReview
+              ? 'font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100'
+              : 'text-muted-foreground hover:bg-muted/30'
+          }`}
+          onClick={async () => {
+            const next = !csrReview
+            setCsrReview(next)
+            setSaving(true)
+            try {
+              await authFetch(`/api/leads/${lead.lead_id}/classify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requires_csr_review: next }),
+              })
+            } finally {
+              setSaving(false)
+            }
+          }}
+        >
+          {csrReview ? '● Requires CSR Review' : '○ Flag for CSR Review'}
+        </button>
+      </div>
 
       {/* Note for "Other" */}
       {effective.sub_status === 'Other' && (
