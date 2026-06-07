@@ -243,7 +243,7 @@ export function LeadClassification({ lead, onClassify }: Props) {
       )}
 
       {/* CSR Review flag — toggleable */}
-      <div className="pt-1 border-t border-muted/40">
+      <div className="pt-2 mt-2 border-t border-muted/60">
         <button
           disabled={saving}
           className={`text-[10px] w-full text-left px-2 py-1 rounded transition-colors ${
