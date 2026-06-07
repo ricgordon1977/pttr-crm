@@ -76,24 +76,26 @@ function parseOhqFields(body: string): { label: string; value: string }[] {
   // Normalize: collapse \r\n to \n, strip leading trade prefix line
   const text = body.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
-  // Single-line fields in display order
+  // Next-field-label boundary — each field value ends at the next known label or end of text
+  const boundary = String.raw`(?=\n\s*(?:Full address|Address|Phone Number|Phone|Email\s*Address|Reason for call|Caller ID)\s*:|$)`
+
   const singleLine: [RegExp, string][] = [
-    [/(?:PLUMBING\s*-\s*Customer Name|ELECTRICAL\s*Customer Name|(?:Owner or Tenant\)\s*)?Full Name)\s*:\s*(.+)/i, 'Customer'],
-    [/(?:Full address|Address)\s*:\s*(.+)/i, 'Address'],
-    [/(?:Phone Number|Phone)\s*:\s*(.+)/i, 'Phone'],
-    [/Email\s*Address\s*:\s*(.+)/i, 'Email'],
+    [new RegExp(String.raw`(?:PLUMBING\s*-\s*Customer Name|ELECTRICAL\s*Customer Name|(?:Owner or Tenant\)\s*)?Full Name)\s*:\s*([\s\S]*?)${boundary}`, 'i'), 'Customer'],
+    [new RegExp(String.raw`(?:Full address|Address)\s*:\s*([\s\S]*?)${boundary}`, 'i'), 'Address'],
+    [new RegExp(String.raw`(?:Phone Number|Phone)\s*:\s*([\s\S]*?)${boundary}`, 'i'), 'Phone'],
+    [new RegExp(String.raw`Email\s*Address\s*:\s*([\s\S]*?)${boundary}`, 'i'), 'Email'],
   ]
 
   for (const [regex, label] of singleLine) {
     const match = text.match(regex)
     if (match) {
-      const value = match[1].trim()
+      const value = match[1].replace(/\n+/g, ' ').trim()
       if (value) fields.push({ label, value })
     }
   }
 
   // Reason for call: capture everything until Caller ID or end of text (can be multi-line)
-  const reasonMatch = text.match(/Reason for call\s*:\s*([\s\S]*?)(?=\n\s*(?:Caller ID)\s*:|$)/i)
+  const reasonMatch = text.match(/Reason for call\s*:\s*([\s\S]*?)(?=\n\s*Caller ID\s*:|$)/i)
   if (reasonMatch) {
     const value = reasonMatch[1].replace(/\n+/g, ' ').trim()
     if (value) fields.push({ label: 'Reason', value })

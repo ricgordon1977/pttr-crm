@@ -77,6 +77,8 @@ export async function GET(
     if (type === 'email') {
       const messageId = searchParams.get('call_id') // reused param name for email message_id
       // Try raw_emails_received first (for reply-thread emails + form originals)
+      // Prefer body_preview: it preserves line breaks from structured emails (e.g. OfficeHQ).
+      // body_text is often a flat single-line strip of the HTML.
       if (messageId) {
         const rows = await query(`
           SELECT
@@ -84,7 +86,7 @@ export async function GET(
             from_email AS from_address,
             to_email AS to_address,
             subject,
-            COALESCE(body_text, body_preview) AS email_body
+            COALESCE(body_preview, body_text) AS email_body
           FROM \`${DS}.raw_emails_received\`
           WHERE message_id = @messageId
           LIMIT 1
