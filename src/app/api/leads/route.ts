@@ -95,6 +95,18 @@ export async function GET(request: Request) {
       profile_override: profileOverride,
     } : {}
 
+    // Account attribution
+    const accountFields = ov.is_account ? {
+      is_account: true,
+      account_id: ov.account_id as string,
+      account_name: ov.account_name as string,
+      account_contact_id: ov.account_contact_id as string || null,
+      account_contact_name: ov.account_contact_name as string || null,
+      exclude_from_analysis: true,
+      is_overridden: true,
+      funnel_stage: 'Account',
+    } : {}
+
     // Pending metadata
     const pendingFields = ov.pending_since ? {
       pending_since: typeof ov.pending_since === 'object' && '_seconds' in (ov.pending_since as object)
@@ -119,6 +131,15 @@ export async function GET(request: Request) {
     const objectiveWins = lead.booking_status === 'Booked' || lead.completed === true
     if (objectiveWins && (subStatus === 'Unable to Classify' || subStatus === 'Pending')) {
       return { ...lead, ...jobOverrides, ...profileFields, is_overridden: false, exclude_from_analysis: false }
+    }
+
+    // Account flag overrides everything — excluded from COD funnel
+    if (ov.is_account) {
+      return {
+        ...lead,
+        ...profileFields,
+        ...accountFields,
+      }
     }
 
     return {

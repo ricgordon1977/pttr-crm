@@ -262,6 +262,11 @@ export function LeadClassification({ lead, onClassify }: Props) {
         </button>
       </div>
 
+      {/* Account attribution — stream classifier */}
+      <div className="pt-2 mt-2 border-t border-muted/60">
+        <AccountFlag lead={lead} onFlagged={() => onClassify?.(lead.lead_id, 'Account', 'Account')} />
+      </div>
+
       {/* "Other" requires free text before saving */}
       {(otherPending || effective.sub_status === 'Other') && (
         <div className="space-y-1">
@@ -275,7 +280,6 @@ export function LeadClassification({ lead, onClassify }: Props) {
               if (otherPending) setOtherText(e.target.value)
             }}
             onBlur={e => {
-              // For already-saved "Other", update note on blur
               if (!otherPending && e.target.value !== (effective.note || '') && e.target.value.trim()) {
                 classify(effective.stage, effective.sub_status, effective.loss_reason, e.target.value.trim())
               }
@@ -305,6 +309,189 @@ export function LeadClassification({ lead, onClassify }: Props) {
               >
                 Cancel
               </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── ACCOUNT FLAG ──────────────────────────────────────────────────────────
+
+interface AcctResult { account_id: string; account_name: string; client_category: string; phone: string; address_suburb: string }
+interface ContactResult { contact_id: string; contact_name: string; phone: string; mobile: string; email: string }
+
+function AccountFlag({ lead, onFlagged }: { lead: Lead; onFlagged?: () => void }) {
+  const [expanded, setExpanded] = useState(false)
+  const [saving, setSaving] = useState(false)
+  // Account search
+  const [acctQuery, setAcctQuery] = useState('')
+  const [acctResults, setAcctResults] = useState<AcctResult[]>([])
+  const [acctSearching, setAcctSearching] = useState(false)
+  const [selectedAcct, setSelectedAcct] = useState<AcctResult | null>(null)
+  // Contact picker
+  const [contacts, setContacts] = useState<ContactResult[]>([])
+  const [contactsLoading, setContactsLoading] = useState(false)
+  const [selectedContact, setSelectedContact] = useState<ContactResult | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+
+  const isAlreadyFlagged = !!lead.is_account
+
+  async function searchAccounts(q: string) {
+    setAcctQuery(q)
+    if (q.length < 2) { setAcctResults([]); return }
+    setAcctSearching(true)
+    try {
+      const r = await authFetch(`/api/accounts/search?q=${encodeURIComponent(q)}`)
+      setAcctResults(await r.json())
+    } finally { setAcctSearching(false) }
+  }
+
+  async function selectAccount(acct: AcctResult) {
+    setSelectedAcct(acct)
+    setAcctResults([])
+    setAcctQuery(acct.account_name)
+    setContactsLoading(true)
+    try {
+      const r = await authFetch(`/api/accounts/${acct.account_id}/contacts`)
+      setContacts(await r.json())
+    } finally { setContactsLoading(false) }
+  }
+
+  async function refreshContacts() {
+    setRefreshing(true)
+    try {
+      await authFetch('/api/contacts/refresh', { method: 'POST' })
+      if (selectedAcct) {
+        const r = await authFetch(`/api/accounts/${selectedAcct.account_id}/contacts`)
+        setContacts(await r.json())
+      }
+    } finally { setRefreshing(false) }
+  }
+
+  async function save() {
+    if (!selectedAcct) return
+    setSaving(true)
+    try {
+      await authFetch(`/api/leads/${lead.lead_id}/account-flag`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_id: selectedAcct.account_id,
+          account_name: selectedAcct.account_name,
+          contact_id: selectedContact?.contact_id || null,
+          contact_name: selectedContact?.contact_name || null,
+        }),
+      })
+      onFlagged?.()
+    } finally { setSaving(false) }
+  }
+
+  async function unflag() {
+    setSaving(true)
+    try {
+      await authFetch(`/api/leads/${lead.lead_id}/account-flag`, { method: 'DELETE' })
+      onFlagged?.()
+    } finally { setSaving(false) }
+  }
+
+  if (isAlreadyFlagged) {
+    return (
+      <div className="space-y-1">
+        <div className="text-[10px] font-semibold text-purple-700 bg-purple-50 rounded px-2 py-1.5">
+          Account: {lead.account_name}
+          {lead.account_contact_name && <span className="font-normal ml-1">({lead.account_contact_name})</span>}
+        </div>
+        <button className="text-[10px] text-red-600 hover:underline" onClick={unflag} disabled={saving}>
+          {saving ? 'Removing...' : 'Remove account flag'}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <button
+        className="text-[10px] w-full text-left px-2 py-1 rounded text-muted-foreground hover:bg-muted/30 transition-colors"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {expanded ? '▾' : '▸'} Flag as Account
+      </button>
+      {expanded && (
+        <div className="space-y-1.5 px-1">
+          {/* Account search */}
+          <input
+            type="text"
+            className="w-full text-[11px] border rounded px-2 py-1"
+            placeholder="Search account name..."
+            value={acctQuery}
+            onChange={e => searchAccounts(e.target.value)}
+          />
+          {acctSearching && <p className="text-[10px] text-muted-foreground">Searching...</p>}
+          {acctResults.length > 0 && !selectedAcct && (
+            <div className="border rounded max-h-32 overflow-y-auto">
+              {acctResults.map(a => (
+                <button key={a.account_id}
+                  className="w-full text-left text-[11px] px-2 py-1 hover:bg-muted/40 border-b last:border-b-0"
+                  onClick={() => selectAccount(a)}
+                >
+                  <span className="font-medium">{a.account_name}</span>
+                  {a.address_suburb && <span className="text-muted-foreground ml-1">{a.address_suburb}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Contact picker */}
+          {selectedAcct && (
+            <div className="space-y-1">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.05em] text-muted-foreground">Contact</div>
+              {contactsLoading ? (
+                <p className="text-[10px] text-muted-foreground">Loading contacts...</p>
+              ) : contacts.length > 0 ? (
+                <select
+                  className="w-full text-[11px] border rounded px-2 py-1"
+                  value={selectedContact?.contact_id || ''}
+                  onChange={e => {
+                    const c = contacts.find(c => c.contact_id === e.target.value)
+                    setSelectedContact(c || null)
+                  }}
+                >
+                  <option value="">Select contact (optional)</option>
+                  {contacts.map(c => (
+                    <option key={c.contact_id} value={c.contact_id}>
+                      {c.contact_name}{c.mobile ? ` — ${c.mobile}` : c.phone ? ` — ${c.phone}` : ''}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-[10px] text-muted-foreground">No contacts found</p>
+              )}
+              <button
+                className="text-[10px] text-blue-600 hover:underline"
+                onClick={refreshContacts}
+                disabled={refreshing}
+              >
+                {refreshing ? 'Refreshing...' : 'Contact not listed? Refresh from AroFlo'}
+              </button>
+
+              {/* Save */}
+              <div className="flex gap-1 pt-1">
+                <button
+                  disabled={saving}
+                  className="text-[10px] px-2 py-0.5 rounded bg-purple-600 text-white disabled:opacity-40"
+                  onClick={save}
+                >
+                  {saving ? 'Saving...' : 'Flag as Account'}
+                </button>
+                <button
+                  className="text-[10px] px-2 py-0.5 rounded border border-muted text-muted-foreground"
+                  onClick={() => { setExpanded(false); setSelectedAcct(null); setAcctQuery(''); setContacts([]) }}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
         </div>

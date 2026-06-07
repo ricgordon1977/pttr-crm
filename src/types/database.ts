@@ -84,6 +84,12 @@ export interface Lead {
   profile_override?: string | null
   // Pending status timestamp
   pending_since?: string | null
+  // Account attribution (Firestore override)
+  is_account?: boolean
+  account_id?: string | null
+  account_name?: string | null
+  account_contact_id?: string | null
+  account_contact_name?: string | null
   // Override fields (merged from Firestore)
   is_overridden?: boolean
   sub_status?: string | null
