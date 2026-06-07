@@ -48,12 +48,14 @@ function interactionTypeKey(type: string): 'call' | 'email' | 'form' | null {
   const t = type?.toLowerCase() ?? ''
   if (t.includes('call') || t.includes('phone')) return 'call'
   if (t.includes('form') && t.includes('submission')) return 'form'
+  if (t.includes('answering service')) return 'email'
   if (t.includes('email')) return 'email'
   return null
 }
 
 function InteractionIcon({ type }: { type: string }) {
   const t = type?.toLowerCase() ?? ''
+  if (t.includes('answering service')) return <PhoneIncoming className="h-3.5 w-3.5 text-orange-500" />
   if (t.includes('inbound') && t.includes('call')) return <PhoneIncoming className="h-3.5 w-3.5 text-green-600" />
   if (t.includes('outbound') && t.includes('call')) return <PhoneOutgoing className="h-3.5 w-3.5 text-blue-500" />
   if (t.includes('inbound') && t.includes('email')) return <Mail className="h-3.5 w-3.5 text-green-600" />

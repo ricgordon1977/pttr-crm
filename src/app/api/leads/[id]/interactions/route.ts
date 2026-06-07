@@ -202,7 +202,34 @@ export async function GET(
             TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 300 SECOND)
             AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
       ),
-      -- Combine + dedupe (prefer WC-linked, then calls, then forms, then email threads)
+      -- Source 5: OfficeHQ answering-service emails matched by phone + time window
+      -- These carry customer name, phone, address, reason for call — critical for
+      -- after-hours calls with no 8x8 recording/transcript.
+      ohq_emails AS (
+        SELECT
+          e.message_id AS interaction_id,
+          CAST(NULL AS INT64) AS lead_id,
+          'Answering Service' AS interaction_type,
+          DATETIME(e.received_at, 'Australia/Sydney') AS interaction_datetime,
+          DATE(DATETIME(e.received_at, 'Australia/Sydney')) AS interaction_date,
+          FORMAT_DATETIME('%H:%M', DATETIME(e.received_at, 'Australia/Sydney')) AS interaction_time,
+          'OfficeHQ' AS interaction_operator,
+          CAST(NULL AS INT64) AS interaction_duration_seconds,
+          LEFT(e.body_preview, 120) AS interaction_summary,
+          CAST(NULL AS STRING) AS call_id
+        FROM \`${DS}.raw_emails_received\` e
+        WHERE LOWER(e.from_email) LIKE '%myreceptionist%'
+          AND (
+            -- Match E.164 format in Caller ID field
+            EXISTS (SELECT 1 FROM UNNEST(@phones) AS p WHERE e.body_preview LIKE CONCAT('%', p, '%'))
+            -- Match 0-prefix format (spaces stripped) in Phone field
+            OR EXISTS (SELECT 1 FROM UNNEST(@phones) AS p WHERE REPLACE(e.body_preview, ' ', '') LIKE CONCAT('%', REPLACE(p, '+61', '0'), '%'))
+          )
+          AND TIMESTAMP(e.received_at) BETWEEN
+            TIMESTAMP_SUB(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 60 SECOND)
+            AND TIMESTAMP_ADD(CAST(@oppTimestamp AS TIMESTAMP), INTERVAL 2592000 SECOND)
+      ),
+      -- Combine + dedupe (prefer WC-linked, then calls, then forms, then email threads, then OHQ)
       combined AS (
         SELECT * FROM wc_interactions
         UNION ALL
@@ -212,6 +239,8 @@ export async function GET(
         SELECT * FROM form_submissions
         UNION ALL
         SELECT * FROM email_thread_replies
+        UNION ALL
+        SELECT * FROM ohq_emails
       )
       SELECT interaction_id, lead_id, interaction_type, interaction_datetime,
         interaction_date, interaction_time, interaction_operator,
