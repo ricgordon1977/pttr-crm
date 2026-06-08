@@ -53,12 +53,38 @@ export async function GET(request: Request) {
     }
   }
 
+  // Batch-read job value overrides for leads with jobnumbers
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const jobIds = [...new Set((leads as any[]).map(l => l.all_jobnumbers?.split(',')[0]?.trim()).filter(Boolean))]
+  const jobValueOverrides: Record<string, number> = {}
+  if (jobIds.length > 0) {
+    const batchSize2 = 500
+    for (let i = 0; i < jobIds.length; i += batchSize2) {
+      const batch = jobIds.slice(i, i + batchSize2)
+      const refs = batch.map(id => adminDb.collection('crm_job_value_overrides').doc(id))
+      const docs = await adminDb.getAll(...refs)
+      for (const doc of docs) {
+        if (doc.exists) {
+          const data = doc.data()!
+          if (data.job_value_override != null) {
+            jobValueOverrides[doc.id] = data.job_value_override as number
+          }
+        }
+      }
+    }
+  }
+
   // Merge: override wins for stage/sub_status UNLESS objective facts override.
   // Objective auto-classify beats "Unable to Classify": if BQ says Booked/Completed,
   // the human verdict doesn't hold — the lead auto-flips and exclude_from_analysis clears.
   // Manual job links promote the opportunity to Booked/Completed with job value.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const merged = (leads as any[]).map((lead) => {
+    // Apply job value override if exists
+    const primaryJob = lead.all_jobnumbers?.split(',')[0]?.trim()
+    if (primaryJob && jobValueOverrides[primaryJob] != null) {
+      lead = { ...lead, job_value: jobValueOverrides[primaryJob] }
+    }
     const ov = overrideMap[lead.lead_id as string]
     if (!ov) return { ...lead, is_overridden: false, exclude_from_analysis: false }
 

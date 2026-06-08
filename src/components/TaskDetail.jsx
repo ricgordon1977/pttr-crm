@@ -473,6 +473,69 @@ function mapApiTask(api) {
   };
 }
 
+function JobValueOverride({ jobId }) {
+  const [value, setValue] = useState("");
+  const [saved, setSaved] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  React.useEffect(() => {
+    if (!jobId) return;
+    fetch(`/api/jobs/${jobId}/value-override`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d && d.job_value_override != null) {
+          setValue(String(d.job_value_override));
+          setSaved(d.job_value_override);
+        }
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, [jobId]);
+
+  async function save() {
+    const num = parseFloat(value);
+    if (isNaN(num) || num < 0) return;
+    setSaving(true);
+    try {
+      const r = await fetch(`/api/jobs/${jobId}/value-override`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_value_override: num }),
+      });
+      if (r.ok) setSaved(num);
+    } finally { setSaving(false); }
+  }
+
+  if (!loaded) return null;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 0" }}>
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--ink3)" }}>
+        Job Value Override
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+        <span style={{ fontSize: 14, color: "var(--ink3)" }}>$</span>
+        <input
+          type="number"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          placeholder="e.g. 1116"
+          style={{ width: 100, fontSize: 14, fontFamily: "'JetBrains Mono',monospace", border: "1px solid var(--line)", borderRadius: 6, padding: "4px 8px" }}
+        />
+        <button
+          onClick={save}
+          disabled={saving || !value || parseFloat(value) === saved}
+          style={{ fontSize: 12, fontWeight: 600, padding: "5px 10px", borderRadius: 6, border: "none", background: saving ? "#ccc" : "#1D5BBF", color: "#fff", cursor: "pointer", opacity: (!value || parseFloat(value) === saved) ? 0.4 : 1 }}
+        >
+          {saving ? "..." : "Save"}
+        </button>
+        {saved != null && <span style={{ fontSize: 12, color: "#1C7A4A", fontWeight: 500 }}>✓ ${saved.toLocaleString("en-AU", { minimumFractionDigits: 2 })}</span>}
+      </div>
+    </div>
+  );
+}
+
 export default function TaskDetail({ task: taskProp, onBack }) {
   const isDemo = !taskProp;
   const mapped = taskProp ? mapApiTask(taskProp) : null;
@@ -786,6 +849,12 @@ export default function TaskDetail({ task: taskProp, onBack }) {
                   </div>
                   <div className="td-mono td-display" style={{ fontSize: 24, fontWeight: 700, color: "#1C7A4A" }}>{t.invoice.amount}</div>
                 </div>
+              </Section>
+            )}
+
+            {!isDemo && t._jobId && (
+              <Section icon={Receipt} title="Job value">
+                <JobValueOverride jobId={t._jobId} />
               </Section>
             )}
           </div>
