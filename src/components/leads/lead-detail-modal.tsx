@@ -550,6 +550,7 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                       <a href={`/jobs/${convertedJob.jobnumber}`} target="_blank" className={`font-semibold ${txt} hover:underline`}>Job #{convertedJob.jobnumber}</a>
                       {(convertedJob.primary_work_type || convertedJob.task_type) && <span className={active ? 'text-blue-700' : 'text-green-700'}>{convertedJob.primary_work_type || convertedJob.task_type}</span>}
                       <Badge variant="secondary" className={`text-xs ${active ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'}`}>{convertedJob.display_status}</Badge>
+                      {convertedJob.due_date && <span className={`text-[12px] ${active ? 'text-blue-600' : 'text-green-600'} tabular-nums`}>Due {formatDate(convertedJob.due_date, 'd MMM')}</span>}
                       {val && <span className={`font-semibold ${txt} tabular-nums`}>{val}</span>}
                     </div>
                     {(convertedJob.description || convertedJob.task_notes) && (

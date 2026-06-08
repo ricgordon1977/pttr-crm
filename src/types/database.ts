@@ -115,6 +115,7 @@ export interface LeadInteraction {
 export interface JobHistory {
   jobnumber: string
   requested_date: string
+  due_date: string | null
   task_type: string
   primary_work_type: string | null
   display_status: string

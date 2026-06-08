@@ -289,7 +289,7 @@ export async function getJobHistory(opportunityId: string) {
     ),
     -- Also find active jobs via phone matching (not yet in opportunities)
     active_jobs AS (
-      SELECT td.jobnumber, td.requestdate AS requested_date, td.tasktasktype_tasktype AS task_type,
+      SELECT td.jobnumber, td.requestdate AS requested_date, td.duedate AS due_date, td.tasktasktype_tasktype AS task_type,
              td.status AS display_status, SAFE_CAST(td.quote_totalex AS NUMERIC) AS task_invoices_total_ex,
              td.client_clientname AS client_name, 'active' AS job_source,
              COALESCE(NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
@@ -307,7 +307,7 @@ export async function getJobHistory(opportunityId: string) {
         )
     ),
     completed_jobs AS (
-      SELECT tc.jobnumber, tc.requested_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
+      SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
              COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
              COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\\s*(.+)$')) AS job_suburb,
              td.description,
@@ -319,7 +319,7 @@ export async function getJobHistory(opportunityId: string) {
     -- Existing-client prior jobs: when no linked jobs, find all COD jobs by phone
     -- Uses same match as is_existing_customer (id_phone + norm_client_mobile)
     prior_client_jobs AS (
-      SELECT tc.jobnumber, tc.requested_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
+      SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
              COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
              COALESCE(NULLIF(tc.address_suburb, ''), NULLIF(td.location_suburb, ''), REGEXP_EXTRACT(td.tasklocation_locationname, r',\\s*(.+)$')) AS job_suburb,
              td.description,

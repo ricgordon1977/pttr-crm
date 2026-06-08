@@ -26,7 +26,7 @@ export async function GET(
     if (manualJn && !rows.some((r: any) => r.jobnumber === manualJn)) {
       // Fetch the manual job and prepend it
       const manualRows = await query(`
-        SELECT tc.jobnumber, tc.requested_date, tc.task_type, tc.display_status,
+        SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status,
           tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
           COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, '')) AS job_address,
           tc.address_suburb AS job_suburb,
