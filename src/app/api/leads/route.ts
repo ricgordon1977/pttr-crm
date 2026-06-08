@@ -27,6 +27,25 @@ export async function GET(request: Request) {
     }
   }
 
+  // Resolve manual WC lead links: batch-fetch WC lead details for attribution
+  const manualWcLeadIds = [...new Set(
+    Object.values(overrideMap)
+      .map(ov => ov.manual_wc_lead_id as number)
+      .filter(v => v != null)
+  )]
+  const manualWcMap: Record<number, Record<string, unknown>> = {}
+  if (manualWcLeadIds.length > 0) {
+    const wcRows = await query(`
+      SELECT lead_id, lead_source, lead_medium, lead_type, profile,
+        contact_name, norm_phone, city
+      FROM \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\`
+      WHERE lead_id IN UNNEST(@wcIds)
+    `, { wcIds: manualWcLeadIds })
+    for (const row of wcRows) {
+      manualWcMap[(row as Record<string, unknown>).lead_id as number] = row as Record<string, unknown>
+    }
+  }
+
   // Resolve manual job links: batch-fetch job details for any overrides with manual_job_number
   const manualJobNumbers = [...new Set(
     Object.values(overrideMap)
@@ -113,6 +132,22 @@ export async function GET(request: Request) {
       jobOverrides = { manual_job_number: manualJn }
     }
 
+    // Manual WC lead link: surface attribution + wc_lead_id on no_inbound opps
+    const manualWcId = ov.manual_wc_lead_id as number | undefined
+    const manualWc = manualWcId != null ? manualWcMap[manualWcId] : null
+    let wcOverrides = {}
+    if (manualWc && lead.lead_type === 'direct_booking') {
+      wcOverrides = {
+        wc_lead_id: manualWcId,
+        manual_wc_lead_id: manualWcId,
+        lead_source: (manualWc.lead_source as string) || lead.lead_source,
+        lead_medium: (manualWc.lead_medium as string) || lead.lead_medium,
+        channel: (manualWc.lead_source as string) === 'google' ? 'Paid Search' : lead.channel,
+      }
+    } else if (manualWcId != null) {
+      wcOverrides = { manual_wc_lead_id: manualWcId }
+    }
+
     // Profile override
     const profileOverride = ov.profile_override as string | undefined
     const profileFields = profileOverride ? {
@@ -156,13 +191,14 @@ export async function GET(request: Request) {
     // Objective facts win: if BQ says Booked or Paid Job, ignore the classification override
     const objectiveWins = lead.booking_status === 'Booked' || lead.completed === true
     if (objectiveWins && (subStatus === 'Unable to Classify' || subStatus === 'Pending')) {
-      return { ...lead, ...jobOverrides, ...profileFields, is_overridden: false, exclude_from_analysis: false }
+      return { ...lead, ...jobOverrides, ...wcOverrides, ...profileFields, is_overridden: false, exclude_from_analysis: false }
     }
 
     // Account flag overrides everything — excluded from COD funnel
     if (ov.is_account) {
       return {
         ...lead,
+        ...wcOverrides,
         ...profileFields,
         ...accountFields,
       }
@@ -171,6 +207,7 @@ export async function GET(request: Request) {
     return {
       ...lead,
       ...jobOverrides,
+      ...wcOverrides,
       ...profileFields,
       ...pendingFields,
       funnel_stage: (jobOverrides as Record<string, unknown>).funnel_stage || ov.stage as string || lead.funnel_stage,

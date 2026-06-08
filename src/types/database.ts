@@ -80,6 +80,8 @@ export interface Lead {
   is_after_hours_gap?: boolean
   // Manual job link (Firestore override)
   manual_job_number?: string | null
+  // Manual WC lead link (Firestore override)
+  manual_wc_lead_id?: number | null
   // Profile override (Firestore)
   profile_override?: string | null
   // Pending status timestamp

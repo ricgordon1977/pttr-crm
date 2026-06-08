@@ -80,7 +80,34 @@ export async function GET(
         LIMIT 1
       `, { callId })
 
-      return Response.json(rows.length > 0 ? JSON.parse(JSON.stringify(rows[0])) : null)
+      if (rows.length > 0) return Response.json(JSON.parse(JSON.stringify(rows[0])))
+
+      // Fallback: WC-internal call_id not in raw_calls — fetch from lead_interactions + WC transcript
+      const wcRows = await query(`
+        SELECT
+          li.call_id,
+          li.contact_datetime_sydney AS call_datetime,
+          CAST(NULL AS STRING) AS caller_phone,
+          CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name ELSE NULL END AS operator,
+          ale.call_duration_seconds AS duration_seconds,
+          COALESCE(li.contact_content, ale.call_transcription) AS full_transcript,
+          CASE
+            WHEN li.contact_content IS NOT NULL THEN 'whatconverts'
+            WHEN ale.call_transcription IS NOT NULL THEN 'whatconverts'
+            ELSE NULL
+          END AS transcript_source,
+          CAST(NULL AS STRING) AS recording_url,
+          COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
+        FROM \`${DS}.lead_interactions\` li
+        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
+          ON CAST(li.lead_id AS INT64) = ale.lead_id
+        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.ettr_leads\` wce ON CAST(li.lead_id AS STRING) = CAST(wce.lead_id AS STRING)
+        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.pttr_leads\` wcp ON CAST(li.lead_id AS STRING) = CAST(wcp.lead_id AS STRING)
+        WHERE li.call_id = @callId
+        LIMIT 1
+      `, { callId })
+
+      return Response.json(wcRows.length > 0 ? JSON.parse(JSON.stringify(wcRows[0])) : null)
     }
 
     if (type === 'email') {

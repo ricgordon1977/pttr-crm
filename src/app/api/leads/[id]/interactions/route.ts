@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server'
 import { verifyAuth } from '@/lib/auth/verify-token'
 import { query } from '@/lib/bigquery/client'
+import { adminDb } from '@/lib/firebase/admin'
 
 const DS = 'pttr-taskdata.ds_crm'
 
@@ -24,7 +25,16 @@ export async function GET(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const oppData = opp as any
     const phones = (oppData.matched_phones as string || '').split(',').map((p: string) => p.trim()).filter(Boolean)
-    const wc_lead_id = oppData.wc_lead_id
+
+    // Check for manual WC lead link in Firestore (overrides native wc_lead_id)
+    let wc_lead_id = oppData.wc_lead_id
+    try {
+      const overrideDoc = await adminDb.collection('crm_lead_overrides').doc(opportunityId).get()
+      if (overrideDoc.exists) {
+        const manualWc = overrideDoc.data()?.manual_wc_lead_id
+        if (manualWc != null) wc_lead_id = manualWc
+      }
+    } catch {} // non-fatal — fall back to native wc_lead_id
 
     // Three-source interaction query:
     // 1. lead_interactions by wc_lead_id (if exists)

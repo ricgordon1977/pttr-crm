@@ -350,6 +350,140 @@ function LinkJobField({ lead, onLinked }: { lead: Lead; onLinked?: () => void })
   )
 }
 
+// ─── LINK WC LEAD ─────────────────────────────────────────────────────────
+
+interface WcLeadValidation {
+  lead_id: number; contact_name: string; date_created: string
+  lead_type: string; lead_source: string; lead_medium: string
+  call_duration_seconds: number | null; norm_phone: string; city: string
+  profile: string; problem_preview: string
+}
+
+function LinkWcLeadField({ lead, onLinked }: { lead: Lead; onLinked?: () => void }) {
+  const [input, setInput] = useState('')
+  const [validating, setValidating] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [candidate, setCandidate] = useState<WcLeadValidation | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const hasManualWc = !!lead.manual_wc_lead_id
+
+  // Only show for no_inbound / direct_booking leads without a native WC link
+  if (lead.lead_type !== 'direct_booking' && !hasManualWc) return null
+  if (lead.wc_lead_id && !hasManualWc) return null
+
+  async function validate() {
+    const id = input.trim()
+    if (!id || !/^\d{6,12}$/.test(id)) {
+      setError('Enter a valid WhatConverts lead ID (6-12 digits)')
+      return
+    }
+    setError(null)
+    setValidating(true)
+    setCandidate(null)
+    try {
+      const r = await authFetch(`/api/leads/${lead.lead_id}/link-wc-lead?wc_lead_id=${encodeURIComponent(id)}`)
+      if (!r.ok) {
+        const data = await r.json()
+        setError(data.error || 'Lead not found')
+        return
+      }
+      setCandidate(await r.json())
+    } catch {
+      setError('Failed to validate lead')
+    } finally {
+      setValidating(false)
+    }
+  }
+
+  async function confirm() {
+    if (!candidate) return
+    setSaving(true)
+    try {
+      const r = await authFetch(`/api/leads/${lead.lead_id}/link-wc-lead`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wc_lead_id: candidate.lead_id }),
+      })
+      if (r.ok) {
+        setCandidate(null)
+        setInput('')
+        onLinked?.()
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function unlink() {
+    setSaving(true)
+    try {
+      await authFetch(`/api/leads/${lead.lead_id}/link-wc-lead`, { method: 'DELETE' })
+      onLinked?.()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="px-5 py-2 border-b">
+      {hasManualWc ? (
+        <div className="flex items-center gap-2 text-[13px]">
+          <Badge variant="secondary" className="bg-purple-100 text-purple-800 text-[10px]">Linked Inbound</Badge>
+          <span className="font-medium tabular-nums">WC #{lead.manual_wc_lead_id}</span>
+          <button className="text-[11px] text-red-600 hover:underline ml-auto" onClick={unlink} disabled={saving}>
+            {saving ? 'Removing...' : 'Remove link'}
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={input}
+              onChange={e => { setInput(e.target.value); setError(null); setCandidate(null) }}
+              onKeyDown={e => { if (e.key === 'Enter') validate() }}
+              placeholder="Link inbound — enter WhatConverts lead ID"
+              className="flex-1 text-[13px] border rounded px-2 py-1 placeholder:text-muted-foreground/60"
+            />
+            <Button size="sm" variant="outline" onClick={validate} disabled={validating || !input.trim()}>
+              {validating ? 'Checking...' : 'Look up'}
+            </Button>
+          </div>
+          {error && <p className="text-[12px] text-red-600">{error}</p>}
+          {candidate && (
+            <div className="bg-purple-50 rounded p-2 text-[13px] space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-purple-900">WC #{candidate.lead_id}</span>
+                <Badge variant="secondary" className="text-[10px]">{candidate.lead_type}</Badge>
+                {candidate.lead_source && (
+                  <span className="text-purple-700">{candidate.lead_source}{candidate.lead_medium ? ` / ${candidate.lead_medium}` : ''}</span>
+                )}
+              </div>
+              <div className="text-[12px] text-purple-800">
+                {candidate.contact_name && <span>{candidate.contact_name} — </span>}
+                {candidate.norm_phone && <span>{candidate.norm_phone} — </span>}
+                {candidate.city && <span>{candidate.city} — </span>}
+                {candidate.call_duration_seconds != null && (
+                  <span>{Math.floor(candidate.call_duration_seconds / 60)}m{candidate.call_duration_seconds % 60 ? ` ${candidate.call_duration_seconds % 60}s` : ''}</span>
+                )}
+                {candidate.problem_preview && <span> — {candidate.problem_preview}</span>}
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Button size="sm" onClick={confirm} disabled={saving}>
+                  {saving ? 'Linking...' : 'Link this lead'}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => { setCandidate(null); setInput('') }}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── PROFILE TOGGLE ────────────────────────────────────────────────────────
 
 function ProfileToggle({ lead, onUpdate }: { lead: Lead; onUpdate?: () => void }) {
@@ -617,6 +751,18 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
               </div>
 
               <Separator />
+
+              {/* Link WC Lead (for no_inbound / direct_booking opps) */}
+              <LinkWcLeadField lead={lead} onLinked={() => {
+                // Re-fetch interactions (now linked via WC) and notify parent
+                authFetch(`/api/leads/${lead.lead_id}/interactions`)
+                  .then(r => r.json()).then((d: unknown) => {
+                    const data = Array.isArray(d) ? d : []
+                    setInteractions(data)
+                    if (data.length > 0) setExpandedIx(new Set([data[0].interaction_id || data[0].call_id || '0']))
+                  })
+                onLeadUpdate?.()
+              }} />
 
               {/* Link Job */}
               <LinkJobField lead={lead} onLinked={() => {
