@@ -25,6 +25,7 @@ const TAXONOMY: { stage: string; subStatuses: { label: string; autoKey?: string 
       { label: 'Customer Inquiry Only' },
       { label: 'Wrong Number / Contact Details' },
       { label: 'Technical Error' },
+      { label: 'Vodafone Orphan' },
     ],
   },
   {
