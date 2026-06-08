@@ -5,7 +5,7 @@ import type { DashboardStats, Lead } from '@/types/database'
 export default async function DashboardPage() {
   const [rawStats, rawLeads] = await Promise.all([
     getDashboardStats(),
-    getLeads(500),
+    getLeads(),
   ])
 
   const stats = JSON.parse(JSON.stringify(

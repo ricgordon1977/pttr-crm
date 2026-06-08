@@ -35,7 +35,7 @@ export async function getContactTimeline(contactId: string) {
 }
 
 // ─── LEADS ───────────────────────────────────────────────────────────────────
-export async function getLeads(limit = 500) {
+export async function getLeads() {
   return query(`
     SELECT
       opportunity_id AS lead_id,
@@ -75,9 +75,9 @@ export async function getLeads(limit = 500) {
       job_count,
       is_after_hours_gap
     FROM \`${DS}.vw_lead_enriched\`
+    WHERE created_at_sydney >= '2025-12-01'
     ORDER BY created_at_sydney DESC
-    LIMIT @limit
-  `, { limit })
+  `)
 }
 
 export async function getLeadDetail(leadId: string) {
