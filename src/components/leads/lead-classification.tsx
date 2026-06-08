@@ -454,15 +454,14 @@ function AccountFlag({ lead, onFlagged }: { lead: Lead; onFlagged?: () => void }
   }
 
   async function save() {
-    if (!selectedAcct) return
     setSaving(true)
     try {
       await authFetch(`/api/leads/${lead.lead_id}/account-flag`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          account_id: selectedAcct.account_id,
-          account_name: selectedAcct.account_name,
+          account_id: selectedAcct?.account_id || null,
+          account_name: selectedAcct?.account_name || null,
           contact_id: selectedContact?.contact_id || null,
           contact_name: selectedContact?.contact_name || null,
         }),
@@ -483,7 +482,7 @@ function AccountFlag({ lead, onFlagged }: { lead: Lead; onFlagged?: () => void }
     return (
       <div className="space-y-1">
         <div className="text-[10px] font-semibold text-purple-700 bg-purple-50 rounded px-2 py-1.5">
-          Account: {lead.account_name}
+          {lead.account_name ? `Account: ${lead.account_name}` : 'Flagged as Account'}
           {lead.account_contact_name && <span className="font-normal ml-1">({lead.account_contact_name})</span>}
         </div>
         <button className="text-[10px] text-red-600 hover:underline" onClick={unflag} disabled={saving}>
@@ -511,6 +510,15 @@ function AccountFlag({ lead, onFlagged }: { lead: Lead; onFlagged?: () => void }
             value={acctQuery}
             onChange={e => searchAccounts(e.target.value)}
           />
+          {!selectedAcct && !acctSearching && (
+            <button
+              disabled={saving}
+              className="text-[10px] w-full text-left px-2 py-1 rounded border border-dashed border-purple-300 text-purple-600 hover:bg-purple-50 transition-colors"
+              onClick={save}
+            >
+              {saving ? 'Saving...' : 'Flag as Account (without linking)'}
+            </button>
+          )}
           {acctSearching && <p className="text-[10px] text-muted-foreground">Searching...</p>}
           {acctResults.length > 0 && !selectedAcct && (
             <div className="border rounded max-h-32 overflow-y-auto">

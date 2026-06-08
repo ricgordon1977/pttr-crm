@@ -12,9 +12,6 @@ export async function POST(
   const body = await request.json()
 
   const { account_id, account_name, contact_id, contact_name } = body
-  if (!account_id || !account_name) {
-    return Response.json({ error: 'account_id and account_name required' }, { status: 400 })
-  }
 
   await adminDb.collection('crm_lead_overrides').doc(opportunityId).set({
     is_account: true,
