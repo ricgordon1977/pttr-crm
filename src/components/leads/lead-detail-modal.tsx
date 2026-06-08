@@ -815,6 +815,15 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                           <td className="py-1 text-right border-t border-muted/50 tabular-nums">
                             {job.task_invoices_total_ex && job.task_invoices_total_ex > 0
                               ? formatCurrency(job.task_invoices_total_ex)
+                              : job.labour_note ? (() => {
+                                  const m = job.labour_note.match(/\$(\d[\d,]*(?:\.\d{2})?)\s*(?:\+\s*gst|plus\s*gst)/i)
+                                  const amt = m ? parseFloat(m[1].replace(/,/g, '')) : null
+                                  return amt && amt >= 50
+                                    ? <span className="text-muted-foreground" title="From tech labour note">{formatCurrency(amt)}</span>
+                                    : job.quote_totalex && job.quote_totalex > 0
+                                      ? <span className="text-muted-foreground">Q: {formatCurrency(job.quote_totalex)}</span>
+                                      : '—'
+                                })()
                               : job.quote_totalex && job.quote_totalex > 0
                                 ? <span className="text-muted-foreground">Q: {formatCurrency(job.quote_totalex)}</span>
                                 : '—'}
