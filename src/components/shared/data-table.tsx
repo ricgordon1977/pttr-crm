@@ -17,7 +17,7 @@ import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { ChevronDown, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const PAGE_SIZE_OPTIONS = [10, 25, 50, 100] as const
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100, 500, 1000] as const
 const BG_WHITE = '#ffffff'
 const BG_STRIPE = '#f7f7f8'
 
