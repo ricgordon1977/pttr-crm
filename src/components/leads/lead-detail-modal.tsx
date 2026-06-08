@@ -23,7 +23,7 @@ import type { Lead, LeadInteraction, JobHistory } from '@/types/database'
 
 interface InteractionDetail {
   operator?: string; operator_name?: string; caller_phone?: string
-  duration_seconds?: number; full_transcript?: string
+  duration_seconds?: number; full_transcript?: string; transcript_source?: string
   recording_url?: string; wc_recording_url?: string; call_datetime?: string
   from_address?: string; to_address?: string; subject?: string
   email_body?: string; submitted_at?: string
@@ -178,8 +178,13 @@ function InlineInteractionDetail({ ix, lead }: { ix: LeadInteraction; lead: Lead
             No recording — {ix.interaction_duration_seconds}s call does not meet recording threshold
           </p>
         ) : (
-          <div className="text-[13px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
-            {detail?.full_transcript || 'No transcript available.'}
+          <div>
+            {detail?.transcript_source === 'whatconverts' && (
+              <div className="text-[11px] text-muted-foreground mb-1">Transcript via WhatConverts</div>
+            )}
+            <div className="text-[13px] whitespace-pre-wrap bg-muted/40 rounded p-3 max-h-[300px] overflow-y-auto leading-relaxed">
+              {detail?.full_transcript || 'No transcript available.'}
+            </div>
           </div>
         )}
       </div>

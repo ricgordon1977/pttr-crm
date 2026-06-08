@@ -41,13 +41,22 @@ export async function GET(
                + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
             ELSE NULL
           END AS duration_seconds,
-          COALESCE(ct.full_transcript, li.contact_content) AS full_transcript,
+          COALESCE(ct.full_transcript, li.contact_content, ale.call_transcription) AS full_transcript,
+          CASE
+            WHEN ct.full_transcript IS NOT NULL THEN '8x8'
+            WHEN li.contact_content IS NOT NULL THEN '8x8'
+            WHEN ale.call_transcription IS NOT NULL THEN 'whatconverts'
+            ELSE NULL
+          END AS transcript_source,
           rr.gcs_uri AS recording_url,
           COALESCE(wce.recording_url, wcp.recording_url) AS wc_recording_url
         FROM \`${DS}.raw_calls\` rc
         LEFT JOIN \`${DS}.call_transcripts\` ct ON rc.call_id = ct.call_id
         LEFT JOIN \`${DS}.raw_recordings\` rr ON rc.call_id = rr.call_id
         LEFT JOIN \`${DS}.lead_interactions\` li ON rc.call_id = li.call_id
+        LEFT JOIN \`pttr-taskdata.gd_WhatConverts.all_leads_enriched\` ale
+          ON li.lead_id IS NOT NULL AND CAST(li.lead_id AS INT64) = ale.lead_id
+          AND ale.call_transcription IS NOT NULL
         LEFT JOIN (
           SELECT parent_call_id, callee_name,
             ROW_NUMBER() OVER (PARTITION BY parent_call_id
