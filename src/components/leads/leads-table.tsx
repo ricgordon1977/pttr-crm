@@ -5,7 +5,7 @@ import { DataTable } from '@/components/shared/data-table'
 import { FunnelStageBadge, AfterHoursBadge } from '@/components/shared/status-badge'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, memo } from 'react'
 import { formatPhone, formatCurrency, formatDate, formatOpportunityLabel } from '@/lib/format'
 import {
   UserCheck, PhoneIncoming, FileText, Mail,
@@ -64,10 +64,10 @@ interface LeadsTableProps {
   filteredLeads: Lead[]  // the filtered+sorted list for navigation
 }
 
-export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReviewFilterChange, filteredLeads }: LeadsTableProps) {
+export const LeadsTable = memo(function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReviewFilterChange, filteredLeads }: LeadsTableProps) {
   const [search, setSearch] = useState('')
 
-  const columns: ColumnDef<Lead, unknown>[] = [
+  const columns: ColumnDef<Lead, unknown>[] = useMemo(() => [
     {
       id: 'actions',
       header: '',
@@ -165,7 +165,7 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       enableColumnFilter: false,
       cell: ({ row }) => <span className="text-[13px] tabular-nums">{formatCurrency(row.original.job_value)}</span>,
     },
-  ]
+  ], [onViewLead]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const searchFiltered = useMemo(() => {
     let result = leads
@@ -224,4 +224,4 @@ export function LeadsTable({ leads, onViewLead, needsReviewFilter, onNeedsReview
       enableColumnFilters
     />
   )
-}
+})

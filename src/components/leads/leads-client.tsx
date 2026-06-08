@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { LeadsTable } from './leads-table'
 import { LeadDetailModal } from './lead-detail-modal'
 import { authFetch } from '@/lib/auth/auth-fetch'
@@ -59,26 +59,38 @@ export function LeadsClient({ leads: initialLeads }: { leads: Lead[] }) {
       .catch(() => {})
   }, [])
 
-  // Navigate to prev/next in the filtered list
+  // Navigate to prev/next — use refs for stable callback identity
+  const selectedLeadRef = useRef(selectedLead)
+  selectedLeadRef.current = selectedLead
+  const filteredLeadsRef = useRef(filteredLeads)
+  filteredLeadsRef.current = filteredLeads
+
   const handleNavigate = useCallback((direction: 'prev' | 'next') => {
-    if (!selectedLead) return
-    const idx = filteredLeads.findIndex(l => l.lead_id === selectedLead.lead_id)
+    const sel = selectedLeadRef.current
+    const list = filteredLeadsRef.current
+    if (!sel) return
+    const idx = list.findIndex(l => l.lead_id === sel.lead_id)
     if (idx === -1) return
     const newIdx = direction === 'prev' ? idx - 1 : idx + 1
-    if (newIdx >= 0 && newIdx < filteredLeads.length) {
-      setSelectedLead(filteredLeads[newIdx])
+    if (newIdx >= 0 && newIdx < list.length) {
+      setSelectedLead(list[newIdx])
     }
-  }, [selectedLead, filteredLeads])
+  }, [])
 
   // Current position for disabling arrows
   const currentIndex = selectedLead ? filteredLeads.findIndex(l => l.lead_id === selectedLead.lead_id) : -1
 
-  // Adjacent lead IDs for prefetching
+  // Adjacent lead IDs for prefetching (next 3 + prev 1)
   const adjacentLeadIds = useMemo(() => {
     if (currentIndex < 0) return undefined
+    const nextIds: string[] = []
+    for (let i = 1; i <= 3 && currentIndex + i < filteredLeads.length; i++) {
+      nextIds.push(filteredLeads[currentIndex + i].lead_id)
+    }
     return {
       prev: currentIndex > 0 ? filteredLeads[currentIndex - 1].lead_id : undefined,
-      next: currentIndex < filteredLeads.length - 1 ? filteredLeads[currentIndex + 1].lead_id : undefined,
+      next: nextIds.length > 0 ? nextIds[0] : undefined,
+      prefetch: nextIds,
     }
   }, [currentIndex, filteredLeads])
 

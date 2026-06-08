@@ -43,7 +43,7 @@ interface LeadDetailModalProps {
   canPrev?: boolean; canNext?: boolean; position?: string
   onJobLinked?: (opportunityId: string) => void
   onLeadUpdate?: () => void
-  adjacentLeadIds?: { prev?: string; next?: string }
+  adjacentLeadIds?: { prev?: string; next?: string; prefetch?: string[] }
 }
 
 // ─── LEAD DATA CACHE ──────────────────────────────────────────────────────
@@ -647,8 +647,12 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
         setLoading(false); setJobHistoryLoading(false); setNotesLoading(false)
       }
 
-      // Prefetch adjacent leads in background
-      if (adjacentLeadIds?.next) fetchLeadData(adjacentLeadIds.next, { background: true }).catch(() => {})
+      // Prefetch adjacent leads in background (next 3 + prev 1)
+      if (adjacentLeadIds?.prefetch) {
+        for (const id of adjacentLeadIds.prefetch) {
+          fetchLeadData(id, { background: true }).catch(() => {})
+        }
+      }
       if (adjacentLeadIds?.prev) fetchLeadData(adjacentLeadIds.prev, { background: true }).catch(() => {})
     }
     load()
