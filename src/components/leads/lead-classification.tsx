@@ -113,7 +113,9 @@ export function LeadClassification({ lead, onClassify }: Props) {
   const [override, setOverride] = useState<{ stage: string; sub_status: string; loss_reason?: string | null; note?: string | null } | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [csrReview, setCsrReview] = useState(!!lead.requires_csr_review)
+  const [csrCategory, setCsrCategory] = useState<string | null>(null)
+  const [csrOtherText, setCsrOtherText] = useState('')
+  const [csrOtherPending, setCsrOtherPending] = useState(false)
   const [otherPending, setOtherPending] = useState(false)
   const [otherText, setOtherText] = useState('')
 
@@ -128,7 +130,9 @@ export function LeadClassification({ lead, onClassify }: Props) {
   useEffect(() => {
     setLoaded(false)
     setOverride(null)
-    setCsrReview(!!lead.requires_csr_review)
+    setCsrCategory(null)
+    setCsrOtherText('')
+    setCsrOtherPending(false)
     authFetch(`/api/leads/${lead.lead_id}/classify`)
       .then(r => r.json())
       .then(data => {
@@ -138,7 +142,12 @@ export function LeadClassification({ lead, onClassify }: Props) {
           loss_reason: data.loss_reason,
           note: data.note,
         })
-        if (data && data.requires_csr_review) setCsrReview(true)
+        if (data && data.requires_csr_review && data.csr_review_category) {
+          setCsrCategory(data.csr_review_category)
+          if (data.csr_review_note) setCsrOtherText(data.csr_review_note)
+        } else if (data && data.requires_csr_review) {
+          setCsrCategory('Customer Service Issue')  // legacy boolean → default category
+        }
         setLoaded(true)
       })
       .catch(() => setLoaded(true))
@@ -234,36 +243,107 @@ export function LeadClassification({ lead, onClassify }: Props) {
         )
       })}
 
-      {/* CSR Review flag — toggleable */}
-      <div className="pt-2 mt-2 border-t border-muted/60">
-        <button
-          disabled={saving}
-          className={`text-[10px] w-full text-left px-2 py-1 rounded transition-colors ${
-            csrReview
-              ? 'font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100'
-              : 'text-muted-foreground hover:bg-muted/30'
-          }`}
-          onClick={async () => {
-            const next = !csrReview
-            setCsrReview(next)
-            setSaving(true)
-            try {
-              await authFetch(`/api/leads/${lead.lead_id}/classify`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ requires_csr_review: next }),
-              })
-            } finally {
-              setSaving(false)
-            }
-          }}
-        >
-          {csrReview ? '● Requires CSR Review' : '○ Flag for CSR Review'}
-        </button>
+      {/* ═══ SECTION DIVIDER: Classification ↕ CSR Review ═══ */}
+      <div className="pt-3 mt-3 border-t-2 border-muted/80">
+        <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-[0.05em] mb-2">CSR Review</div>
+        <div className="flex flex-wrap gap-[3px]">
+          {['Failed to Book Job', 'Customer Service Issue', 'Complaint', 'Other'].map(cat => {
+            const isActive = csrCategory === cat
+            return (
+              <button
+                key={cat}
+                disabled={saving}
+                className={`text-[10px] px-1.5 py-[1px] rounded border transition-colors ${
+                  isActive
+                    ? 'bg-amber-600 text-white border-transparent font-medium'
+                    : 'bg-white text-muted-foreground border-muted/60 hover:border-foreground/30 hover:bg-muted/30'
+                }`}
+                onClick={async () => {
+                  if (isActive) {
+                    // Deselect — clear review
+                    setCsrCategory(null)
+                    setCsrOtherPending(false)
+                    setSaving(true)
+                    try {
+                      await authFetch(`/api/leads/${lead.lead_id}/classify`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ requires_csr_review: false }),
+                      })
+                    } finally { setSaving(false) }
+                  } else if (cat === 'Other') {
+                    setCsrOtherPending(true)
+                    setCsrCategory(cat)
+                  } else {
+                    setCsrCategory(cat)
+                    setCsrOtherPending(false)
+                    setSaving(true)
+                    try {
+                      await authFetch(`/api/leads/${lead.lead_id}/classify`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ requires_csr_review: true, csr_review_category: cat }),
+                      })
+                    } finally { setSaving(false) }
+                  }
+                }}
+              >
+                {cat}
+              </button>
+            )
+          })}
+        </div>
+        {/* CSR Other — required free text */}
+        {csrOtherPending && (
+          <div className="mt-1.5 space-y-1">
+            <input
+              type="text"
+              className="w-full text-[11px] border rounded px-2 py-1"
+              placeholder="Describe the issue..."
+              value={csrOtherText}
+              onChange={e => setCsrOtherText(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && csrOtherText.trim()) {
+                  setSaving(true)
+                  authFetch(`/api/leads/${lead.lead_id}/classify`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requires_csr_review: true, csr_review_category: 'Other', csr_review_note: csrOtherText.trim() }),
+                  }).finally(() => { setSaving(false); setCsrOtherPending(false) })
+                }
+              }}
+            />
+            <div className="flex gap-1">
+              <button
+                disabled={saving || !csrOtherText.trim()}
+                className="text-[10px] px-2 py-0.5 rounded bg-amber-600 text-white disabled:opacity-40"
+                onClick={() => {
+                  setSaving(true)
+                  authFetch(`/api/leads/${lead.lead_id}/classify`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ requires_csr_review: true, csr_review_category: 'Other', csr_review_note: csrOtherText.trim() }),
+                  }).finally(() => { setSaving(false); setCsrOtherPending(false) })
+                }}
+              >
+                Save
+              </button>
+              <button
+                className="text-[10px] px-2 py-0.5 rounded border border-muted text-muted-foreground"
+                onClick={() => { setCsrOtherPending(false); setCsrCategory(null) }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {csrCategory === 'Other' && !csrOtherPending && csrOtherText && (
+          <div className="mt-1 text-[10px] text-amber-700 bg-amber-50 rounded px-2 py-1">{csrOtherText}</div>
+        )}
       </div>
 
-      {/* Account attribution — stream classifier */}
-      <div className="pt-2 mt-2 border-t border-muted/60">
+      {/* ═══ SECTION DIVIDER: CSR Review ↕ Account ═══ */}
+      <div className="pt-3 mt-3 border-t-2 border-muted/80">
         <AccountFlag lead={lead} onFlagged={() => onClassify?.(lead.lead_id, 'Account', 'Account')} />
       </div>
 

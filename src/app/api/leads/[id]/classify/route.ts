@@ -21,11 +21,20 @@ export async function POST(
       return Response.json({ ok: true })
     }
 
-    // CSR review flag toggle (separate from classification)
+    // CSR review flag (separate from classification)
     if (body.requires_csr_review !== undefined && !body.stage) {
-      await adminDb.collection('crm_lead_overrides').doc(opportunityId).set({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const csrData: Record<string, any> = {
         requires_csr_review: body.requires_csr_review,
-      }, { merge: true })
+      }
+      if (body.requires_csr_review) {
+        csrData.csr_review_category = body.csr_review_category || null
+        csrData.csr_review_note = body.csr_review_note || null
+      } else {
+        csrData.csr_review_category = null
+        csrData.csr_review_note = null
+      }
+      await adminDb.collection('crm_lead_overrides').doc(opportunityId).set(csrData, { merge: true })
       return Response.json({ ok: true })
     }
 
