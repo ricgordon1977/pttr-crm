@@ -201,26 +201,31 @@ gap_based / no_inbound), `channel`, `source`, `medium`, `campaign`, `keyword`,
 `profile`, `wc_lead_id`, `matched_phones`, `matched_emails`,
 `is_no_inbound_enquiry`, `has_answered_call`, `is_existing_customer`
 
-## §8 Answering-Service Emails — PLANNED
+## §8 Answering-Service Emails — BUILT (enrichment on vw_lead_enriched)
 
 OfficeHQ emails carry structured customer data (name, phone, address, problem,
-Caller ID) for after-hours calls. Currently excluded from the spine but
-confirmed as enrichment on existing 8x8 calls (98.4% match rate).
+Caller ID) for after-hours calls. Confirmed as enrichment on existing 8x8 calls
+(98.4% match rate). NOT a standalone lead source.
 
-**Planned (Ric's stated intent, NOT yet built)**:
-- Ingest as enrichment LINKED to the call opportunity (keyed by opportunity_id),
-  NOT as a standalone lead, NOT as columns in vw_lead_enriched
-- Content store joined on the detail page + available to the AI classifier
+**Built**: contact name, email, and suburb from OfficeHQ pager emails are
+resolved as FALLBACK fields in `vw_lead_enriched` — they appear in the
+`contact_name`, `email`, and `suburb` COALESCE chains when no WC/AroFlo/prior-
+client data exists. Matched by phone (E.164 or 0-prefix in body) within 10 min
+of opportunity timestamp.
+
+**Still planned (not yet built)**:
+- Full content store (problem description, address detail) keyed by
+  opportunity_id, linked on detail page + available to the AI classifier
 - **HIGH VALUE PRE-APRIL**: no 8x8 transcripts exist before ~Apr 30, so the
   answering-service email is the only content for Dec–March after-hours calls —
   it is the pre-transcript classification substitute
 
-## §9 Lean Read Surface: vw_lead_enriched — BUILT
+## §9 Lean Read Surface: vw_lead_enriched — BUILT (v4)
 
 One row per opportunity. Joins opportunities + lookups + AroFlo outcome +
-attribution.
+attribution + revenue model.
 
-**Source file**: `bigquery/vw_lead_enriched_v3.sql`
+**Source file**: `bigquery/vw_lead_enriched.sql` (v4, deployed)
 
 ### Profile Resolution Ladder (auditable via `profile_source`)
 1. Unambiguous DID → trade (from lkp_did_trade)
@@ -234,10 +239,8 @@ attribution.
 - Forms: both NULL
 
 ### completed (rules-based)
-- `TRUE` if ANY job in the cluster is `status='Archived' AND job_status=
-  'Completed' AND task_invoices_total_ex > 0`
-- Multi-job clusters: `job_value` sums across all jobs; `completed` checks
-  ANY job
+- `TRUE` if ANY job in the cluster is `job_status = 'Completed'`
+- Multi-job clusters: checked via `LOGICAL_OR` across all jobs
 - Single-job: checks the primary job directly
 
 ### Campaign Attribution (with Quinn LP fallback)
@@ -245,27 +248,161 @@ attribution.
 - Fallback: `opportunity.campaign → lkp_campaign` (for Quinn paid forms
   where WC has no record but the email carries the gad_campaignid)
 
+### Revenue Model — BUILT (v4)
+
+Three fields per job, cluster-summed to opportunity grain. Per-job ladder
+applied FIRST, then summed (so a mixed cluster sums each job at its own basis).
+
+**Fields**:
+- `invoiced_amount` — `task_invoices_total_ex`, cluster-summed. The truth;
+  never overwritten by estimates.
+- `estimated_sales` — best note-bridge value when not yet invoiced. NULL when
+  invoiced > 0. Tagged by `revenue_source` (inv_note / labour_note).
+- `revenue` — **derived reporting field**: `COALESCE(NULLIF(invoiced_amount, 0),
+  estimated_sales)`. Invoiced always wins; when invoice later lands, revenue
+  auto-flips from estimate to actual. No double-count.
+- `revenue_basis` — invoiced / inv_note / labour_note / override / pending
+- `revenue_source` — NULL when invoiced, else source tag
+- `multi_visit_flag` — TRUE when labour note has 2+ distinct work dates
+  (possible partial amount)
+- `job_value` — backward-compatible alias for `revenue`
+
+**Trust order** (per job, before cluster-sum):
+1. `invoiced_amount > 0` → use invoiced (actual always wins)
+2. Manual task-value override (Firestore `crm_job_value_overrides`) → highest
+   estimate trust (applied at API read time, not in BQ view)
+3. INV note (Frances) → `revenue_source = 'inv_note'`
+4. Tech labour note → `revenue_source = 'labour_note'`
+5. NULL → `revenue_basis = 'pending'`
+
+**INV Note Parser** (`task_notes_deduped.note_clean`):
+- Matches Frances's template: `INV {n} ${X.XX} incl GST - Paid {method}`
+- **Option A**: parse INV number from each note, take MAX amount per distinct
+  invoice number (collapses partial-payment lines), SUM across distinct invoices
+  (handles multi-invoice jobs). ÷1.1 for ex-GST.
+- Excludes $0 ("Paid No work").
+- Validated: **96% within 1%** of invoiced_ex on 99 jobs with both.
+
+**Labour Note Parser** (`tasklabours_raw.note`):
+- Matches `$X+gst` / `$X plus gst`. Amount is **already ex-GST** — use as-is.
+- **Keyword-anchored**: picks $ amount adjacent to collected/paid/banked/eft/
+  cash/card — NOT the max number. Fixes quote-embedded-in-note overstatement
+  (e.g. "quoted $2485+gst ... collected $705" takes $705).
+- Fix space-broken numbers: `$13 84` → `$1384`.
+- Exclude <$50. Latest workdate entry per job.
+- Validated: **86% within 1%** of invoiced_ex on 338 invoiced jobs.
+
+**Cluster-sum logic** (`cluster_revenue` CTE):
+- Multi-job opps: UNNEST `all_jobnumbers`, LEFT JOIN `job_revenue`, SUM per
+  opportunity. Each job contributes at its own basis.
+- Single-job opps: `pj_rev` (per-job revenue) joined directly.
+- `revenue_basis` at cluster level: if ANY job is invoiced → 'invoiced'.
+
+**WhatConverts sales_value — cross-check only**:
+- WC is accurate WHERE it tracks: 91% exact match on like-for-like leads,
+  10% total variance (add-on work / return visits).
+- But WC covers only ~21% of booked opps (153 of 714). The $465K gap is
+  unattributed organic/direct bookings WC never saw.
+- **AroFlo-bridged `revenue` is the revenue truth.** WC sales_value is useful
+  only as a paid-campaign validation.
+
 ### Funnel Stage Taxonomy — Two Workstreams
 
-**DATA-DRIVEN (this build, objective, no human judgment):**
+**DATA-DRIVEN (objective, no human judgment):**
 - Not Captured (dropped/missed/unanswered — `raw_calls.answered`)
 - Captured (answered AND ≥20s)
-- Booked (tied to ≥1 AroFlo job; clustering-aware: one opp = one booking,
-  not one per jobnumber)
-- Completed (Archived+Completed+invoiced>0) + revenue (cluster-summed)
+- Booked (tied to ≥1 AroFlo job; clustering-aware)
+- Paid Job (Completed + `revenue > 0`, includes note-bridged revenue)
+- Job Complete (Completed but no revenue yet)
 - Revenue vs spend / ROAS per paid segment (`vw_economics`)
 
-**QUALITATIVE (separate workstream — physical review now, AI review later;
-NOT this build):**
-- `quotable`, `loss_reason` (DNP), `csr_quality`, `disposition`, `lead_class`
-- All NULL in `vw_lead_enriched` — populated by 836-import + AI + Firestore
-  overrides at read time
+**QUALITATIVE (Firestore overrides, merged at API read time):**
+- `quotable`, `loss_reason`, `csr_quality`, `disposition`, `lead_class`
+- All NULL in `vw_lead_enriched` — populated by manual classification +
+  (future) AI + Firestore overrides at read time
 - No rate that divides by a qualitative field (e.g. booking-rate-vs-quotable)
-  can be computed until that workstream lands
-- Report objective stages as COUNTS, not rates-against-qualified
-- The discussion paper's booking/conversion rates use a qualitative 'quotable'
-  denominator and CANNOT be reconciled by this build — that comparison waits
-  for the classification workstream
+  can be computed until classification coverage is sufficient
+
+## §9a Classification System — BUILT
+
+### Funnel Taxonomy (locked, UI + Firestore)
+
+| Stage | Sub-Statuses |
+|---|---|
+| **Not Captured** | Dropped Call (auto), Unanswered Call (auto), Unable to Classify |
+| **Not Quotable** | Outside Service Area, Service Not Provided, Strata Issue, Spam, Customer Inquiry Only, Wrong Number / Contact Details, Technical Error |
+| **Pending** | Pending (with `pending_since` timestamp) |
+| **Not Booked** | Customer Unresponsive, Booked Elsewhere, Tenant / Strata Referral, Price / Minimum Call Out, Capacity / Scheduling, Wanted Quote Over Phone, Customer Resolved, Other (requires free-text note) |
+| **Booked** | Job Pending (auto), Job Complete (auto), Booking Cancelled, Quote Only, Unable to Complete Job - Out of Scope |
+
+Auto-detected sub-statuses (from BQ objective fields) are shown with a `●`
+indicator. Human overrides always replace auto-detection.
+
+### Special Statuses
+- **Unable to Classify** (`exclude_from_analysis = TRUE`): removes lead from
+  all funnel denominators and rate calculations
+- **Pending** (`pending_since` timestamp): marks leads needing follow-up;
+  converted from Firestore `_seconds` to ISO string at API read time
+
+### After-Hours Gap Auto-Classification
+- Runs as orchestrator step (NOT page-load), daily after opportunities rebuild
+- **Rules**: `is_after_hours_gap = TRUE` (no WC, no job, no contact, no
+  recording, no OHQ email) AND `captured = FALSE` → Not Captured / Dropped Call
+- `is_after_hours_gap AND captured = TRUE` → Not Booked / Customer Unresponsive
+  (auto-placed in UI via `getAutoPlacement`)
+- **Guard**: NEVER overwrites human overrides. Only writes when no Firestore doc
+  exists OR existing doc was auto-written (`updated_by` starts with `auto_rule:`)
+- Tagged `updated_by = 'auto_rule:ah_gap_short'`
+
+### CSR Review (independent of classification)
+Categories: Failed to Book Job, Customer Service Issue, Complaint, Other
+(requires free-text note). Saved as `requires_csr_review`, `csr_review_category`,
+`csr_review_note` in Firestore.
+
+### Account Attribution
+- **Flag**: links lead to an AroFlo Account (search → select → optional contact)
+- Sets `is_account = TRUE`, `funnel_stage = 'Account'`,
+  `exclude_from_analysis = TRUE`
+- On-demand contact refresh from AroFlo (`/api/contacts/refresh`)
+- Unflag via DELETE removes all account fields
+
+### Legacy Value Migration (on read)
+- `'CSR Failure'` → `'Customer Unresponsive'` + `requires_csr_review = TRUE`
+- `'Lost / Unresponsive'` → `'Customer Unresponsive'`
+
+## §9b CRM Architecture — Override Precedence
+
+### Data Flow
+1. **BigQuery** (`vw_lead_enriched`): objective fields (answered, captured,
+   completed, revenue, funnel_stage, is_after_hours_gap)
+2. **Firestore** (`crm_lead_overrides`): human/auto classification overrides
+   (stage, sub_status, loss_reason, exclude_from_analysis, is_account, etc.)
+3. **API merge** (`/api/leads`): batch-reads Firestore, applies overrides on
+   top of BQ data, returns merged Lead objects
+
+### Override Precedence (highest → lowest)
+1. **Objective AroFlo facts** always win: if BQ says `booking_status = 'Booked'`
+   or `completed = TRUE`, override "Unable to Classify" is cleared
+2. **Account flag** forces `funnel_stage = 'Account'` +
+   `exclude_from_analysis = TRUE`
+3. **Manual job link** (`manual_job_number`): promotes unlinked inbound to
+   Booked/Paid Job based on linked job status
+4. **Human override** (Firestore stage/sub_status)
+5. **Auto-classification** (orchestrator `auto_rule:*`)
+6. **BQ default** (objective `funnel_stage`)
+
+### Orchestrator (Cloud Function: `aroflo-daily-orchestrator`)
+- Runs daily. Steps include AroFlo data sync, opportunities rebuild
+  (`build_opportunities.sql` = step 14 equivalent), then after-hours gap
+  auto-classify
+- Uses `firebase-admin-sa` secret to reach Firestore in `pettr-data` project
+- If secret is missing, auto-classify step fails (non-fatal to orchestrator)
+
+### Firestore Collections
+- `crm_lead_overrides`: classification overrides, keyed by `opportunity_id`
+- `crm_job_value_overrides`: manual job value overrides, keyed by `jobnumber`
+- `crm_notes`: user-added notes, keyed by auto-ID
+- `crm_account_notes`: account notes
 
 ## §10 Known Attribution Gaps (Website-Side)
 
@@ -295,11 +432,22 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
 ## §11 Baseline + Reconciliation — BUILT
 
 ### Opportunity Baseline (Dec 2025 – May 2026)
-- **2,270 opportunities** (supersedes all earlier figures; 1,732 retired)
-- WC attribution: ~37%
+- **2,558 opportunities** (current, post-OfficeHQ enrichment + expanded spine)
+- WC attribution: ~21% of booked opps have WC sales_value
 - No-inbound (AroFlo job, no matching call/form): 153
-- **329 completed COD jobs reconcile exactly** to AroFlo truth
-  (311 distinct completed opportunities covering 326 in-window + 3 pre-window)
+- **487 completed** opps; **372 Paid Job** (completed + revenue > 0)
+- Original 329 completed-invoiced reconciliation preserved; +13 completed jobs
+  newly promoted to Paid Job via note-bridged revenue
+
+### Revenue Baseline (Dec 2025 – May 2026, booked opps)
+- **Total revenue**: $660,222 (AroFlo-bridged)
+  - Invoiced (hard): $529,477 (368 opps, 80%)
+  - INV note (estimate): $95,715 (65 opps, 15%)
+  - Labour note (estimate): $35,030 (26 opps, 5%)
+  - Pending (no data): 255 opps
+- **WC sales_value** (same opps): $194,978 — 30% of AroFlo-bridged
+- Like-for-like (152 opps with both): AroFlo $213,839 vs WC $194,373 (+10%).
+  91% exact match at lead level. WC's problem is coverage, not accuracy.
 
 ### Email Form Ingestion Impact — SETTLED
 - 20 genuinely-new opportunities from email forms (no prior call/WC/job)
@@ -336,31 +484,76 @@ Standing facts the CRM compensates for. Parallel website fixes noted.
 - [x] DID → trade lookup + campaign → type/division lookup
 - [x] Profile resolution ladder (DID → WC → AroFlo → Unknown)
 - [x] answered vs captured (distinct fields, correct semantics)
-- [x] completed reconciliation (329/329 to AroFlo)
+- [x] completed reconciliation (329/329 to AroFlo, preserved at 487/372)
 - [x] After-hours 8x8 confirmation (98.4% match to answering-service emails)
 - [x] Deterministic idempotent opportunity IDs
 - [x] Drift alarm queries (DID + campaign lookup coverage)
 - [x] Transcript coverage map (0% pre-April, 83% May)
+- [x] Revenue model v4: three fields (invoiced/estimated/revenue), two parsers
+      (INV note 96% accuracy, labour note 86%), cluster-summed, WC validated
+- [x] OfficeHQ answering-service enrichment on vw_lead_enriched (name/email/suburb)
+- [x] Classification taxonomy (5 stages, full sub-statuses) + Firestore overrides
+- [x] After-hours gap auto-classification (orchestrator, human-override guard)
+- [x] CSR review categories (independent of classification)
+- [x] Account attribution flow (flag → account → contact → exclude from COD)
+- [x] Manual job linking (promotes unlinked inbound to Booked/Paid Job)
+- [x] Job value overrides (Firestore `crm_job_value_overrides`)
+- [x] vw_economics: per-segment marketing economics (spend/leads/ROAS)
+- [x] Operator resolution (call_legs → recordings → callee_name)
+- [x] WC revenue validation: accurate where tracked (91% exact), but covers
+      only 21% of booked opps — AroFlo-bridged is revenue truth
 
 ### PLANNED
-- [ ] Answering-service email content as enrichment store (§8) — keyed by
-      opportunity_id, linked on detail page + classifier input. High-value
-      pre-April substitute for missing 8x8 transcripts.
-- [ ] Classification phase: disposition, loss_reason, csr_quality from
-      836-import + AI + Firestore overrides
+- [ ] Answering-service email CONTENT STORE (§8) — full problem description +
+      address, keyed by opportunity_id, on detail page + classifier input.
+      High-value pre-April substitute for missing 8x8 transcripts.
+- [ ] Funnel + economics DASHBOARD (discussion-paper layout) — headline rates,
+      numbers-at-a-glance, per-campaign economics. Requires Firestore
+      classification data for qualitative stages (Not Quotable / Not Booked).
+      Spend reconciliation done (§11); UI build pending.
+- [ ] AI classification layer — deferred until manual classification builds
+      sufficient ground truth. Will use transcript + OHQ content + call
+      metadata. Firestore `updated_by` tagging already distinguishes
+      human / auto_rule / (future) ai_classify.
 
 ### SETTLED (economics phase prerequisites)
 - [x] Net-new counts tied out: 20 genuinely new, +19 baseline, ±1 from merge
 - [x] Tier-1 false positive check: clean (tawk excluded by sender list)
 - [x] Quinn ROAS wording: +4 real uplift, 28/28 Feb–Apr already WC-attributed
+- [x] Revenue model validated: invoiced reconciles, note-bridge adds $131K
+- [x] WC vs AroFlo variance closed: coverage gap, not accuracy gap
+
+### BACKLOG / KNOWN ISSUES
+- **WPForms UTM passthrough**: main-site forms strip UTM/gclid at submit.
+  Tier 3 forms permanently brand-only attribution. Website plugin fix needed.
+- **ETTR WPForms WC gap**: ~5/month never reach WC. CRM compensates via email
+  parser. Website instrumentation fix needed.
+- **Quinn LP WC snippet**: still missing. CRM compensates via Tier 1 email
+  parser. Website fix needed.
+- **task_invoices_total_ex sync lag**: AroFlo extract doesn't pick up invoices
+  until the job is fully closed. Revenue model bridges with note parsing, but
+  the lag means recent months lean heavier on estimates. Not a bug — structural.
+- **Labour note parser outliers**: ~10% of matches on multi-visit jobs capture
+  one visit's collection, not the full total. `multi_visit_flag` marks these.
+  Not fixable without summing across visits (which double-counts when the
+  tech re-states the running total).
+- **Pending opps with no data** (312 of 714 booked): jobs where neither invoice
+  nor any note carries a dollar amount. Mostly very recent or non-COD-flagged.
+  Will self-resolve as invoicing catches up.
 
 ## §13 Key Files
 
 | File | Purpose |
 |---|---|
 | `bigquery/vw_leads_unified.sql` | **Canonical** — deployed spine (call + form + email) |
-| `bigquery/vw_lead_enriched.sql` | **Canonical** — deployed lean read surface |
+| `bigquery/vw_lead_enriched.sql` | **Canonical** — deployed lean read surface + revenue model (v4) |
+| `bigquery/vw_economics.sql` | **Canonical** — per-segment marketing economics view |
 | `bigquery/build_opportunities.sql` | **Canonical** — materialized opportunity clustering script |
 | `bigquery/view-definitions.sql` | Reference/audit copy of ALL BQ view DDL (not deployment source) |
 | `bigquery/archive/` | Superseded versions (v1, v2, v3_view) — do not edit |
+| `cloud-functions/aroflo-daily-orchestrator/main.py` | Orchestrator: data sync + opportunities rebuild + auto-classify |
+| `src/components/leads/lead-classification.tsx` | Classification taxonomy UI (stages + sub-statuses) |
+| `src/app/api/leads/route.ts` | Leads API: BQ + Firestore merge, override precedence |
+| `src/app/api/leads/[id]/classify/route.ts` | Classification GET/POST endpoint |
+| `src/app/api/jobs/[id]/value-override/route.ts` | Job value override GET/POST |
 | `HANDOVER.md` | CRM app (Next.js) technical handover |
