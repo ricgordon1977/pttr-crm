@@ -100,7 +100,7 @@ Editable. Maps Google Ads campaign_id to type + division.
 
 Multi-source event spine. `source_type ∈ {call, form, email}`.
 
-**Source file**: `bigquery/vw_leads_unified_v3.sql`
+**Source file**: `bigquery/vw_leads_unified.sql`
 
 ### Calls (source_type = 'call')
 - From `raw_calls`, direction = Incoming
@@ -228,18 +228,24 @@ attribution + revenue model.
 **Source file**: `bigquery/vw_lead_enriched.sql` (v4, deployed)
 
 ### Profile Resolution Ladder (auditable via `profile_source`)
-1. Unambiguous DID → trade (from lkp_did_trade)
-2. WC profile ("Plumber to the Rescue" / "Electrician to the Rescue")
-3. AroFlo job task_type (contains "Plumb" or "Electri")
-4. 'Unknown (confirm)' — unresolved
+1. **Manual override** — human sets PTTR/ETTR via `/api/leads/[id]/classify`
+   (`profile_override` + `profile_overridden_at` in Firestore). Wins over all
+   auto-resolution; applied at API read time.
+2. Unambiguous DID → trade (from lkp_did_trade)
+3. WC profile ("Plumber to the Rescue" / "Electrician to the Rescue")
+4. AroFlo job task_type (contains "Plumb" or "Electri")
+5. 'Unknown (confirm)' — unresolved
 
 ### answered vs captured (distinct)
 - `answered` = `raw_calls.answered = 'Answered'` (PBX says call connected)
 - `captured` = `answered AND max_duration_sec >= 20` (meaningful conversation)
 - Forms: both NULL
+- `first_response_minutes` — field exists in output, currently always NULL
+  (placeholder for future response-time tracking)
 
 ### completed (rules-based)
-- `TRUE` if ANY job in the cluster is `job_status = 'Completed'`
+- `TRUE` if ANY job in the cluster is `job_status IN ('Completed', 'Archived')`
+  (Archived = completed per AroFlo semantics; both count)
 - Multi-job clusters: checked via `LOGICAL_OR` across all jobs
 - Single-job: checks the primary job directly
 
@@ -386,7 +392,9 @@ Categories: Failed to Book Job, Customer Service Issue, Complaint, Other
 2. **Account flag** forces `funnel_stage = 'Account'` +
    `exclude_from_analysis = TRUE`
 3. **Manual job link** (`manual_job_number`): promotes unlinked inbound to
-   Booked/Paid Job based on linked job status
+   Booked/Paid Job based on linked job status. **Dedup rule**: when a job is
+   manually linked to a lead, any `no_inbound` opportunity (`J-{jobnumber}`)
+   for that same job is suppressed from the leads list to prevent double-counting.
 4. **Human override** (Firestore stage/sub_status)
 5. **Auto-classification** (orchestrator `auto_rule:*`)
 6. **BQ default** (objective `funnel_stage`)
