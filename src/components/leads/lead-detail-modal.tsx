@@ -694,11 +694,17 @@ export function LeadDetailModal({ lead, open, onOpenChange, onClassify, onNaviga
                       )}
                       {val && <span className={`font-semibold ${txt} tabular-nums`}>{val}</span>}
                     </div>
-                    {(convertedJob.description || convertedJob.task_notes) && (
+                    {(convertedJob.description || convertedJob.task_notes || convertedJob.labour_note) && (
                       <div className="px-5 pb-2 space-y-1.5">
                         {convertedJob.description && (
                           <div className="text-[12px] text-foreground/80 whitespace-pre-wrap bg-white/60 rounded p-2 max-h-[150px] overflow-y-auto leading-relaxed">
                             {stripHtml(convertedJob.description)}
+                          </div>
+                        )}
+                        {convertedJob.labour_note && (
+                          <div className="text-[12px] text-foreground/80 whitespace-pre-wrap bg-white/60 rounded p-2 max-h-[120px] overflow-y-auto leading-relaxed">
+                            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-[0.05em]">Tech Notes</span>
+                            <div className="mt-0.5">{convertedJob.labour_note}</div>
                           </div>
                         )}
                         {convertedJob.task_notes && (

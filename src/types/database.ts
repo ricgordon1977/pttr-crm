@@ -129,6 +129,7 @@ export interface JobHistory {
   job_suburb: string | null
   description: string | null
   task_notes: string | null
+  labour_note: string | null
 }
 
 export interface Location {

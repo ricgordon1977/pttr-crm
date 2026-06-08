@@ -316,8 +316,8 @@ export async function getJobHistory(opportunityId: string) {
       JOIN \`pttr-taskdata.ds_aroflo.tasks_complete\` tc ON jn.jobnumber = tc.jobnumber
       LEFT JOIN \`pttr-taskdata.ds_aroflo.tasks_deduped\` td ON tc.jobnumber = td.jobnumber
     ),
-    -- Existing-client prior jobs: when no linked jobs, find all COD jobs by phone
-    -- Uses same match as is_existing_customer (id_phone + norm_client_mobile)
+    -- Existing-client prior jobs: find all COD jobs by phone for returning customers
+    -- (regardless of whether the current opp already has a linked job)
     prior_client_jobs AS (
       SELECT tc.jobnumber, tc.requested_date, td.duedate AS due_date, tc.task_type, tc.display_status, tc.task_invoices_total_ex, tc.client_name, 'completed' AS job_source,
              COALESCE(NULLIF(tc.location, ''), NULLIF(tc.address, ''), NULLIF(td.location_locationname, ''), NULLIF(td.location_address, ''), NULLIF(td.tasklocation_locationname, '')) AS job_address,
@@ -330,8 +330,7 @@ export async function getJobHistory(opportunityId: string) {
         AND tc.jobnumber NOT IN (SELECT jobnumber FROM job_numbers)
         AND EXISTS (
           SELECT 1 FROM opp
-          WHERE opp.all_jobnumbers IS NULL
-            AND opp.is_existing_customer = TRUE
+          WHERE opp.is_existing_customer = TRUE
             AND (tc.id_phone = opp.phone OR tc.norm_client_mobile = opp.phone)
         )
     ),
@@ -362,7 +361,8 @@ export async function getJobHistory(opportunityId: string) {
       GROUP BY task_jobnumber
     )
     SELECT aj.*, cf.primary_work_type,
-      COALESCE(tn.task_notes, ln.labour_note) AS task_notes
+      tn.task_notes,
+      ln.labour_note
     FROM all_jobs aj
     LEFT JOIN \`pttr-taskdata.ds_aroflo.task_customfields_deduped\` cf ON aj.jobnumber = cf.jobnumber
     LEFT JOIN task_notes_agg tn ON aj.jobnumber = tn.jobnumber
