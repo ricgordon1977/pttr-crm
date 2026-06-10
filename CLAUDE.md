@@ -194,11 +194,33 @@ customer. Exclude the 8583-xxxx extension range.
 5-round label propagation in a BigQuery scripted job (~50s). Too complex for a
 view; materialized as a table. Re-run is idempotent (CREATE OR REPLACE).
 
+### Lead-Counting Invariant (RULE)
+The **opportunity is the unit of lead counting**. All WC touches, 8x8 calls,
+and form submissions within a cluster are **interactions** — never separate
+leads. Opportunity boundaries are set by a **30-day consecutive-silence gap**
+(measured between successive touches, not first-to-last). A customer
+contacting repeatedly with no 30-day gap = one opportunity, many interactions.
+A gap of >30 days between consecutive touches = a new opportunity.
+
+- **Volume / funnel metrics** MUST count `COUNT(DISTINCT opportunity_id)`, never
+  WC touch count or array length.
+- **The interaction timeline** surfaces ALL touches (every WC lead, every 8x8
+  call, every form) as individual interactions — this is content surfacing, not
+  lead counting.
+- **`wc_lead_id`** (scalar) = the primary WC touch, derived as first-touch from
+  `wc_leads[0]`. Used for single-value displays and WC joins. The derivation is
+  swappable (e.g. nearest-to-job) without a rebuild.
+- **`wc_leads`** (array) = the lossless record of all WC-linked events in the
+  cluster:
+  `ARRAY<STRUCT<wc_lead_id, source, medium, keyword, campaign, channel, event_ts>>`
+  Ordered by event_ts. One struct per WC touch.
+
 ### Key Fields
 `opportunity_id`, `phone`, `jobnumber`, `all_jobnumbers`, `job_count`,
 `call_count`, `form_count`, `max_duration_sec`, `opp_type` (job_matched /
 gap_based / no_inbound), `channel`, `source`, `medium`, `campaign`, `keyword`,
-`profile`, `wc_lead_id`, `matched_phones`, `matched_emails`,
+`profile`, `wc_lead_id` (derived primary), `wc_leads` (array, lossless),
+`matched_phones`, `matched_emails`,
 `is_no_inbound_enquiry`, `has_answered_call`, `is_existing_customer`
 
 ## §8 Answering-Service Emails — BUILT (enrichment on vw_lead_enriched)
