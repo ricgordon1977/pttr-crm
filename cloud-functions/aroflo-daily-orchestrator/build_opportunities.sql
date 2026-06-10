@@ -1,6 +1,11 @@
 -- build_opportunities.sql: Materialized connected-component opportunity clustering
 -- Run as a script to populate ds_crm.opportunities (table, not view).
 -- Re-run is idempotent (CREATE OR REPLACE).
+--
+-- Third-stream amendment (2026-06-10): WhatConverts is now a third origination
+-- source. WC leads not already in the spine seed new opportunities; those that
+-- match existing events enrich via the wc_leads array. Attribution uses WC
+-- primacy (§8a.1) and tiered defaults (§8a.2).
 
 -- ====== STEP 1: Collect event nodes ======
 CREATE TEMP TABLE spine_events AS
@@ -81,22 +86,51 @@ SELECT *,
   CASE WHEN COALESCE(job_email, '') = '' AND contact_email IS NULL AND site_email IS NULL
     THEN extract_email(desc_text) ELSE NULL END AS desc_email,
   -- OfficeHQ pager "Caller ID:" phone — always extracted (not gated on structured fields).
-  -- The CSR pastes the pager text into the AroFlo description; the Caller ID is the 8x8
-  -- CDR phone which may differ from the structured contact phone (typos, or customer
-  -- called from a different number than the one they gave the answering service).
-  -- Only matches the specific "Caller ID:" label to avoid extracting unrelated numbers.
   norm_au_phone(REGEXP_EXTRACT(
     strip_html(desc_text),
     r'Caller\s+ID\s*:\s*(\+?\d[\d\s\-\.]{7,15})'
   )) AS callerid_phone
 FROM raw_jobs;
 
+-- ====== STEP 1a: WC-only event nodes (third-stream) ======
+-- Eligible WC leads NOT already represented in the spine via ±5s match.
+-- These enter the graph as 'W'-prefixed nodes. The clustering algorithm
+-- naturally handles ENRICH (clusters with existing events via phone/email)
+-- vs SEED (forms new standalone components).
+CREATE TEMP TABLE wc_events AS
+SELECT
+  CAST(wc.lead_id AS STRING) AS event_id,
+  wc.lead_id AS wc_lead_id,
+  wc.date_created AS event_ts,
+  NULLIF(wc.norm_phone, '') AS phone,
+  LOWER(NULLIF(TRIM(wc.norm_email), '')) AS email,
+  wc.lead_source AS source,
+  wc.lead_medium AS medium,
+  wc.lead_keyword AS keyword,
+  wc.lead_campaign AS campaign,
+  CASE WHEN wc.lead_type = 'Phone Call' THEN wc.lead_type
+       WHEN wc.lead_type = 'Web Form' THEN wc.lead_type
+       ELSE wc.lead_type END AS channel,
+  wc.profile,
+  wc.lead_type,
+  wc.contact_name
+FROM `pttr-taskdata.gd_WhatConverts.all_leads_enriched` wc
+LEFT JOIN (
+  SELECT DISTINCT wc_lead_id FROM spine_events WHERE wc_lead_id IS NOT NULL
+) existing ON wc.lead_id = existing.wc_lead_id
+WHERE wc.lead_status = 'Unique'
+  AND wc.spam = FALSE
+  AND wc.is_test_lead = FALSE
+  AND existing.wc_lead_id IS NULL;
+
 -- ====== STEP 2: Contact-point mapping ======
 CREATE TEMP TABLE contact_points AS
+-- Spine events
 SELECT 'S' AS src, event_id, event_ts, phone AS cp, 'phone' AS cp_type FROM spine_events WHERE phone IS NOT NULL AND phone != ''
 UNION ALL
 SELECT 'S', event_id, event_ts, email, 'email' FROM spine_events WHERE email IS NOT NULL AND email != ''
 UNION ALL
+-- Job events (all contact levels)
 SELECT 'J', event_id, event_ts, id_phone, 'phone' FROM job_events WHERE id_phone IS NOT NULL AND id_phone != ''
 UNION ALL
 SELECT 'J', event_id, event_ts, norm_client_phone, 'phone' FROM job_events
@@ -104,43 +138,41 @@ SELECT 'J', event_id, event_ts, norm_client_phone, 'phone' FROM job_events
 UNION ALL
 SELECT 'J', event_id, event_ts, job_email, 'email' FROM job_events WHERE job_email IS NOT NULL AND job_email != ''
 UNION ALL
--- Task contact mobile (highest priority for MISC COD / placeholder clients)
 SELECT 'J', event_id, event_ts, contact_mobile, 'phone' FROM job_events
   WHERE contact_mobile IS NOT NULL
     AND contact_mobile != COALESCE(id_phone, '') AND contact_mobile != COALESCE(norm_client_phone, '')
 UNION ALL
--- Task contact email
 SELECT 'J', event_id, event_ts, contact_email, 'email' FROM job_events
   WHERE contact_email IS NOT NULL
     AND contact_email != COALESCE(job_email, '')
 UNION ALL
--- Location site phone (when different from all above)
 SELECT 'J', event_id, event_ts, site_phone, 'phone' FROM job_events
   WHERE site_phone IS NOT NULL
     AND site_phone != COALESCE(id_phone, '') AND site_phone != COALESCE(norm_client_phone, '')
     AND site_phone != COALESCE(contact_mobile, '')
 UNION ALL
--- Location site email (when different from all above)
 SELECT 'J', event_id, event_ts, site_email, 'email' FROM job_events
   WHERE site_email IS NOT NULL
     AND site_email != COALESCE(job_email, '') AND site_email != COALESCE(contact_email, '')
 UNION ALL
--- Description-extracted phone (final rung, only when all structured null)
 SELECT 'J', event_id, event_ts, desc_phone, 'phone' FROM job_events
   WHERE desc_phone IS NOT NULL
 UNION ALL
--- Description-extracted email (final rung)
 SELECT 'J', event_id, event_ts, desc_email, 'email' FROM job_events
   WHERE desc_email IS NOT NULL
 UNION ALL
--- OfficeHQ Caller ID phone (always extracted — may differ from structured contact)
 SELECT 'J', event_id, event_ts, callerid_phone, 'phone' FROM job_events
   WHERE callerid_phone IS NOT NULL
     AND callerid_phone != COALESCE(id_phone, '')
     AND callerid_phone != COALESCE(norm_client_phone, '')
     AND callerid_phone != COALESCE(contact_mobile, '')
     AND callerid_phone != COALESCE(site_phone, '')
-    AND callerid_phone != COALESCE(desc_phone, '');
+    AND callerid_phone != COALESCE(desc_phone, '')
+UNION ALL
+-- WC-only events (third-stream nodes)
+SELECT 'W', event_id, event_ts, phone, 'phone' FROM wc_events WHERE phone IS NOT NULL
+UNION ALL
+SELECT 'W', event_id, event_ts, email, 'email' FROM wc_events WHERE email IS NOT NULL;
 
 -- Prefix event_ids
 CREATE TEMP TABLE prefixed_cp AS
@@ -164,7 +196,10 @@ WHERE (id_phone IS NULL OR id_phone = '')
   AND site_email IS NULL
   AND desc_phone IS NULL
   AND desc_email IS NULL
-  AND callerid_phone IS NULL;
+  AND callerid_phone IS NULL
+UNION DISTINCT
+-- Anonymous WC events (no phone, no email) — standalone singletons
+SELECT CONCAT('W-', event_id) FROM wc_events WHERE phone IS NULL AND email IS NULL;
 
 -- ====== STEP 3: Edges ======
 CREATE TEMP TABLE bi_edges AS
@@ -230,9 +265,46 @@ SELECT r5.comp,
     s.attribution_source, s.wc_lead_id, s.channel, s.source, s.medium,
     s.campaign, s.keyword, s.profile, s.tracking_number, s.direct_subtype,
     s.call_outcome, s.answered, s.contact_name
-  ) ORDER BY s.event_ts LIMIT 1)[OFFSET(0)] AS first_event
+  ) ORDER BY s.event_ts LIMIT 1)[OFFSET(0)] AS first_event,
+  -- All WC-linked events in the cluster from the spine (lossless record)
+  ARRAY_AGG(
+    IF(s.wc_lead_id IS NOT NULL,
+      STRUCT(
+        s.wc_lead_id,
+        s.source,
+        s.medium,
+        s.keyword,
+        s.campaign,
+        s.channel,
+        s.event_ts
+      ), NULL)
+    IGNORE NULLS ORDER BY s.event_ts
+  ) AS wc_leads
 FROM r5
 JOIN spine_events s ON r5.eid = CONCAT('S-', s.event_id)
+GROUP BY r5.comp;
+
+-- WC-only events per component (third-stream nodes not already in spine)
+CREATE TEMP TABLE comp_wc AS
+SELECT r5.comp,
+  COUNT(*) AS wc_event_count,
+  -- WC leads from third-stream nodes (for merging into wc_leads array)
+  ARRAY_AGG(STRUCT(
+    w.wc_lead_id,
+    w.source,
+    w.medium,
+    w.keyword,
+    w.campaign,
+    w.channel,
+    w.event_ts
+  ) ORDER BY w.event_ts) AS wc_only_leads,
+  -- First WC event metadata (for WC-seeded opps with no spine events)
+  ARRAY_AGG(STRUCT(
+    w.phone, w.email, w.profile, w.contact_name, w.event_ts,
+    w.source, w.medium, w.keyword, w.campaign, w.channel, w.lead_type
+  ) ORDER BY w.event_ts LIMIT 1)[OFFSET(0)] AS first_wc_event
+FROM r5
+JOIN wc_events w ON r5.eid = CONCAT('W-', w.event_id)
 GROUP BY r5.comp;
 
 CREATE TEMP TABLE comp_jobs AS
@@ -249,32 +321,97 @@ FROM r5
 JOIN job_events j ON r5.eid = CONCAT('J-', j.event_id)
 GROUP BY r5.comp;
 
+-- Timestamps: include spine, job, AND WC event timestamps
 CREATE TEMP TABLE comp_ts AS
 SELECT r5.comp, MIN(
-  CASE WHEN r5.eid LIKE 'S-%' THEN s.event_ts ELSE j.event_ts END
+  CASE
+    WHEN r5.eid LIKE 'S-%' THEN s.event_ts
+    WHEN r5.eid LIKE 'J-%' THEN j.event_ts
+    WHEN r5.eid LIKE 'W-%' THEN w.event_ts
+  END
 ) AS min_ts
 FROM r5
 LEFT JOIN spine_events s ON r5.eid = CONCAT('S-', s.event_id)
 LEFT JOIN job_events j ON r5.eid = CONCAT('J-', j.event_id)
+LEFT JOIN wc_events w ON r5.eid = CONCAT('W-', w.event_id)
 GROUP BY r5.comp;
 
 CREATE TEMP TABLE phone_first_job AS
 SELECT phone, MIN(requested_date_parsed) AS first_job_date FROM (
+  -- Client-level phones (already E.164)
   SELECT norm_client_mobile AS phone, requested_date_parsed FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE norm_client_mobile IS NOT NULL AND norm_client_mobile != ''
   UNION ALL
   SELECT id_phone, requested_date_parsed FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE id_phone IS NOT NULL AND id_phone != ''
+  UNION ALL
+  -- Contact-level phones (raw AU format → normalize to E.164)
+  SELECT
+    CONCAT('+61', SUBSTR(REGEXP_REPLACE(cd.mobile, r'[^0-9]', ''), 2)) AS phone,
+    tc.requested_date_parsed
+  FROM `pttr-taskdata.ds_aroflo.contacts_deduped` cd
+  JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td ON cd.userid = td.contact_userid
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON td.jobnumber = tc.jobnumber
+  WHERE cd.mobile IS NOT NULL AND cd.mobile != ''
+    AND REGEXP_REPLACE(cd.mobile, r'[^0-9]', '') LIKE '04%'
+    AND LENGTH(REGEXP_REPLACE(cd.mobile, r'[^0-9]', '')) = 10
+  UNION ALL
+  SELECT
+    CONCAT('+61', SUBSTR(REGEXP_REPLACE(cd.phone, r'[^0-9]', ''), 2)) AS phone,
+    tc.requested_date_parsed
+  FROM `pttr-taskdata.ds_aroflo.contacts_deduped` cd
+  JOIN `pttr-taskdata.ds_aroflo.tasks_deduped` td ON cd.userid = td.contact_userid
+  JOIN `pttr-taskdata.ds_aroflo.tasks_complete` tc ON td.jobnumber = tc.jobnumber
+  WHERE cd.phone IS NOT NULL AND cd.phone != ''
+    AND (REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '02%'
+      OR REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '03%'
+      OR REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '04%'
+      OR REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '07%'
+      OR REGEXP_REPLACE(cd.phone, r'[^0-9]', '') LIKE '08%')
+    AND LENGTH(REGEXP_REPLACE(cd.phone, r'[^0-9]', '')) = 10
 ) GROUP BY phone;
 
 -- ====== STEP 6: Materialize final table ======
+-- Attribution logic:
+--   1. WC primacy (§8a.1): when wc_leads has entries, ALL primary attribution
+--      (source/medium/campaign/keyword) comes from the first WC touch — never
+--      from first_event. This fixes the Frankenstein-row bug.
+--   2. Attribution tiers (§8a.2) for opps with NO WC touches:
+--      a. Quinn form (any) → google/cpc
+--      b. WPForms → organic
+--      c. Direct DID / jobs_email → existing tags (channel-level)
+--   3. Attribution-as-a-unit: all fields from the SAME array element or tier.
 CREATE OR REPLACE TABLE `pttr-taskdata.ds_crm.opportunities` AS
-WITH all_comps AS (SELECT DISTINCT comp FROM r5)
+WITH all_comps AS (SELECT DISTINCT comp FROM r5),
+-- Merge wc_leads arrays: spine-matched WC events + third-stream WC-only events
+merged_wc AS (
+  SELECT
+    ac.comp,
+    ARRAY(
+      SELECT AS STRUCT wc_lead_id, source, medium, keyword, campaign, channel, event_ts
+      FROM (
+        SELECT * FROM UNNEST(COALESCE(cs.wc_leads,
+          ARRAY<STRUCT<wc_lead_id INT64, source STRING, medium STRING, keyword STRING, campaign STRING, channel STRING, event_ts TIMESTAMP>>[]))
+        UNION ALL
+        SELECT * FROM UNNEST(COALESCE(cw.wc_only_leads,
+          ARRAY<STRUCT<wc_lead_id INT64, source STRING, medium STRING, keyword STRING, campaign STRING, channel STRING, event_ts TIMESTAMP>>[]))
+      )
+      ORDER BY event_ts
+    ) AS all_wc_leads
+  FROM all_comps ac
+  LEFT JOIN comp_spine cs ON ac.comp = cs.comp
+  LEFT JOIN comp_wc cw ON ac.comp = cw.comp
+)
 SELECT
   CASE
     WHEN cj.jobnumber IS NOT NULL THEN CONCAT('J-', cj.jobnumber)
     ELSE CONCAT('G-', TO_HEX(MD5(CONCAT(ac.comp, '|',
       COALESCE(cc.matched_phones, ''), '|', COALESCE(cc.matched_emails, '')))))
   END AS opportunity_id,
-  COALESCE(cs.first_event.phone, SPLIT(cc.matched_phones, ',')[SAFE_OFFSET(0)]) AS phone,
+  -- phone: spine first, then WC-seeded, then matched_phones
+  COALESCE(
+    cs.first_event.phone,
+    cw.first_wc_event.phone,
+    SPLIT(cc.matched_phones, ',')[SAFE_OFFSET(0)]
+  ) AS phone,
   cj.jobnumber,
   cj.first_job.job_task_type AS job_task_type,
   cj.first_job.job_display_status AS job_status,
@@ -286,34 +423,103 @@ SELECT
   COALESCE(cs.form_count, 0) AS form_count,
   COALESCE(cs.max_duration_sec, 0) AS max_duration_sec,
   CASE
-    WHEN cs.comp IS NULL THEN 'no_inbound'
+    WHEN cs.comp IS NULL AND cw.comp IS NULL THEN 'no_inbound'
     WHEN cj.jobnumber IS NOT NULL THEN 'job_matched'
     ELSE 'gap_based'
   END AS opp_type,
-  cs.first_event.is_business_hours,
-  COALESCE(cs.first_event.attribution_source, 'direct_booking') AS attribution_source,
-  COALESCE(cs.first_event.channel, 'Direct Booking') AS channel,
-  COALESCE(cs.first_event.source, 'direct') AS source,
-  COALESCE(cs.first_event.medium, '(none)') AS medium,
-  cs.first_event.campaign,
-  cs.first_event.keyword,
-  cs.first_event.profile,
-  cs.first_event.wc_lead_id,
+  COALESCE(cs.first_event.is_business_hours,
+    CASE WHEN cw.first_wc_event IS NOT NULL THEN
+      EXTRACT(HOUR FROM DATETIME(cw.first_wc_event.event_ts, 'Australia/Sydney')) BETWEEN 7 AND 17
+    END
+  ) AS is_business_hours,
+  -- Attribution source tag
+  CASE
+    WHEN ARRAY_LENGTH(mw.all_wc_leads) > 0 THEN 'whatconverts'
+    WHEN cs.first_event.attribution_source IS NOT NULL THEN cs.first_event.attribution_source
+    WHEN cw.comp IS NOT NULL THEN 'whatconverts'
+    ELSE 'direct_booking'
+  END AS attribution_source,
+  -- === ATTRIBUTION: WC primacy + tiered defaults ===
+  -- Channel
+  CASE
+    WHEN ARRAY_LENGTH(mw.all_wc_leads) > 0 THEN COALESCE(mw.all_wc_leads[OFFSET(0)].channel, cs.first_event.channel)
+    WHEN cs.first_event.attribution_source = 'quinn_lp' THEN cs.first_event.channel
+    WHEN cs.first_event.attribution_source = 'email_form' AND cs.first_event.channel = 'Organic - Landing Page' THEN 'Paid Search (Quinn LP)'
+    WHEN cs.first_event.attribution_source = 'email_form' AND cs.first_event.channel = 'Website Form' THEN 'Organic - Website Form'
+    WHEN cs.first_event.channel IS NOT NULL THEN cs.first_event.channel
+    WHEN cw.first_wc_event IS NOT NULL THEN cw.first_wc_event.channel
+    ELSE 'Direct Booking'
+  END AS channel,
+  -- Source: WC primacy → Quinn=google → WPForms=organic → existing
+  CASE
+    WHEN ARRAY_LENGTH(mw.all_wc_leads) > 0 THEN mw.all_wc_leads[OFFSET(0)].source
+    WHEN cs.first_event.attribution_source = 'quinn_lp' THEN 'google'
+    WHEN cs.first_event.attribution_source = 'email_form' AND cs.first_event.channel = 'Organic - Landing Page' THEN 'google'
+    WHEN cs.first_event.attribution_source = 'email_form' AND cs.first_event.channel = 'Website Form' THEN 'organic'
+    WHEN cs.first_event.source IS NOT NULL THEN cs.first_event.source
+    WHEN cw.first_wc_event IS NOT NULL THEN cw.first_wc_event.source
+    ELSE 'direct'
+  END AS source,
+  -- Medium
+  CASE
+    WHEN ARRAY_LENGTH(mw.all_wc_leads) > 0 THEN mw.all_wc_leads[OFFSET(0)].medium
+    WHEN cs.first_event.attribution_source = 'quinn_lp' THEN 'cpc'
+    WHEN cs.first_event.attribution_source = 'email_form' AND cs.first_event.channel = 'Organic - Landing Page' THEN 'cpc'
+    WHEN cs.first_event.attribution_source = 'email_form' AND cs.first_event.channel = 'Website Form' THEN '(none)'
+    WHEN cs.first_event.medium IS NOT NULL THEN cs.first_event.medium
+    WHEN cw.first_wc_event IS NOT NULL THEN cw.first_wc_event.medium
+    ELSE '(none)'
+  END AS medium,
+  -- Campaign: from same attribution unit
+  CASE
+    WHEN ARRAY_LENGTH(mw.all_wc_leads) > 0 THEN mw.all_wc_leads[OFFSET(0)].campaign
+    WHEN cs.first_event.attribution_source IN ('quinn_lp', 'email_form') THEN cs.first_event.campaign
+    WHEN cs.first_event.campaign IS NOT NULL THEN cs.first_event.campaign
+    WHEN cw.first_wc_event IS NOT NULL THEN cw.first_wc_event.campaign
+    ELSE NULL
+  END AS campaign,
+  -- Keyword: from same attribution unit
+  CASE
+    WHEN ARRAY_LENGTH(mw.all_wc_leads) > 0 THEN mw.all_wc_leads[OFFSET(0)].keyword
+    WHEN cs.first_event.attribution_source IN ('quinn_lp', 'email_form') THEN cs.first_event.keyword
+    WHEN cs.first_event.keyword IS NOT NULL THEN cs.first_event.keyword
+    WHEN cw.first_wc_event IS NOT NULL THEN cw.first_wc_event.keyword
+    ELSE NULL
+  END AS keyword,
+  -- Profile
+  COALESCE(cs.first_event.profile, cw.first_wc_event.profile) AS profile,
+  -- Primary WC lead: first-touch among ALL WC events (merged array, swappable)
+  mw.all_wc_leads[SAFE_OFFSET(0)].wc_lead_id AS wc_lead_id,
+  -- Full merged set of WC leads in this cluster (lossless)
+  mw.all_wc_leads AS wc_leads,
   cs.first_event.direct_subtype,
   cs.first_event.queue_ext,
   cs.first_event.queue_name,
-  cs.first_event.contact_name,
+  COALESCE(cs.first_event.contact_name, cw.first_wc_event.contact_name) AS contact_name,
   cc.matched_phones,
   cc.matched_emails,
-  cs.comp IS NULL AS is_no_inbound_enquiry,
+  -- is_no_inbound_enquiry: no spine events AND no WC events (job-only)
+  (cs.comp IS NULL AND cw.comp IS NULL) AS is_no_inbound_enquiry,
   COALESCE(cs.has_answered_call, FALSE) AS has_answered_call,
-  -- is_existing_customer: filled via post-hoc join
-  FALSE AS is_existing_customer
+  FALSE AS is_existing_customer,
+  -- Third-stream tagging
+  CASE
+    WHEN cs.comp IS NULL AND cw.comp IS NOT NULL THEN 'whatconverts'
+    ELSE NULL
+  END AS origination_source,
+  CASE
+    WHEN cs.comp IS NULL AND cw.comp IS NOT NULL
+      AND cw.first_wc_event.phone IS NULL AND cw.first_wc_event.email IS NULL
+      THEN 'anonymous'
+    ELSE NULL
+  END AS identity
 FROM all_comps ac
 JOIN comp_ts ct ON ac.comp = ct.comp
 LEFT JOIN comp_contacts cc ON ac.comp = cc.comp
 LEFT JOIN comp_spine cs ON ac.comp = cs.comp
-LEFT JOIN comp_jobs cj ON ac.comp = cj.comp;
+LEFT JOIN comp_wc cw ON ac.comp = cw.comp
+LEFT JOIN comp_jobs cj ON ac.comp = cj.comp
+LEFT JOIN merged_wc mw ON ac.comp = mw.comp;
 
 -- Post-hoc: set is_existing_customer via phone lookup
 UPDATE `pttr-taskdata.ds_crm.opportunities` o

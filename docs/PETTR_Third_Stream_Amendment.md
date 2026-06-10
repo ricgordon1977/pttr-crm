@@ -1,9 +1,9 @@
 # PETTR CRM — Third-Stream Amendment (WhatConverts as Origination Source)
 
 **Companion to:** PETTR Lead Spine Architecture Addendum.
-**Status:** Spec amendment, produced from the June 2026 lead-coverage validation (the
-enriched-leads CSV comparison). This is the SPEC the spine change is checked against — written
-before the build, same as the Addendum.
+**Status:** SHIPPED (2026-06-10). Originally specced pre-build from the June 2026 lead-coverage
+validation; updated post-build to reflect the actual shipped population (51 seeds, not 131 —
+see §2a for why).
 
 ---
 
@@ -30,6 +30,30 @@ These are not matching-tolerance failures (those were the first-event attributio
 fixed, and the different-WC-ID cases, resolved by the `wc_leads` array). They are **leads with
 no spine row**. The only fix is to let WC seed spine rows.
 
+### 2a. Shipped scope: 51 seeds, not 131 (build finding)
+
+The Phase 3 analysis estimated **131 new opps** (17 identified + 114 anonymous) by classifying
+979 eligible WC leads against the opportunity table by phone/email identity. WC leads with no
+identity (no phone AND no email) were classified as "anonymous — needs seeding."
+
+The Phase 4 build (2026-06-10) discovered that **WC Web Forms were already in the spine**.
+`vw_leads_unified` ingests WC forms as `source_type = 'form'` events — including forms with no
+customer phone or email. These forms were already creating singleton opportunities via the
+existing clustering. **77 anonymous-form opps pre-existed** before the third stream shipped.
+
+Seeding them again would have double-counted. The real gap the third stream closes is narrower
+than Phase 3 estimated: **WC Phone Calls that the PBX/8x8 never recorded** — anonymous callers
+(withheld number, no 8x8 CDR) and PBX-bypass calls (WC logged the call, 8x8 didn't).
+
+**Shipped population:**
+- **35 anonymous** WC phone calls (no caller phone, no 8x8 CDR) — `identity = 'anonymous'`
+- **16 identified** WC phone calls (phone-bearing, but no matching 8x8 CDR) — 1 job-linked,
+  15 unlinked
+- **= 51 new opps** (+50 net after 1 merge from clustering)
+
+The 53 not-in-spine eligible WC leads were all Phone Calls; zero Web Forms fell through,
+confirming the spine already handled the form channel completely.
+
 ## 3. The core rule
 
 For each **Unique, non-spam** WC lead (preserve existing exclusions — see §6):
@@ -49,6 +73,11 @@ The matching logic itself does **not** change. What changes is the **fallthrough
 goes from *drop* to *seed*. The seed-vs-enrich test is the coarse **identity-within-cluster**
 match (phone/email within the 30-day window), **not** the ±5s call-timestamp match — the ±5s
 match is only ever for attaching a WC call to a specific 8x8 CDR leg.
+
+**Shipped scope note:** in practice, only WC Phone Calls reach the SEED path — WC Web Forms
+are already in the spine via `vw_leads_unified` `source_type = 'form'` and therefore always
+match an existing spine event (see §2a). The rule is general, but the population it acts on
+is call-only.
 
 ## 4. The central risk this must control: duplicate seeding
 
@@ -83,9 +112,12 @@ Two options:
 
 **DECIDED: (A) — seed-and-flag.** It's the honest reading of "a lead is a customer reaching out
 by any door." The flag keeps them segmentable and the spam pre-filter bounds the volume.
-Phase 2 measured the real population at **114 anonymous opps (~4.3% of the ~2,678 base)** — a
-bigger flagged-orphan set than first estimated, but immaterial as a share and genuine
-withheld-number callers, not noise.
+
+Phase 2 estimated 114 anonymous opps, but the Phase 4 build found that 77 of those were WC Web
+Forms already in the spine as singleton opps (see §2a). The **shipped anonymous population is
+35** — all WC Phone Calls with withheld numbers and no 8x8 CDR. Combined with the 77
+pre-existing anonymous-form opps, total anonymous WC opps = **112** (~1.1% of the ~10,052
+inbound base).
 
 **Anonymous → job reconciliation happens at the BOOKING / job layer, not the spine.** An
 anonymous lead and its eventual job can't be joined at origination (no shared identity), but
@@ -140,8 +172,8 @@ one:
 - **Anonymous leads retain channel attribution.** "Anonymous" means no phone/email — it does
   **not** mean unattributed. A withheld-number caller still arrived via a tracked channel
   (the tracking number / landing page captured `gmb / organic`, `google / cpc / <keyword>`,
-  etc.). So the 114 anonymous seeds carry full source/medium/campaign even though they have no
-  identity and no job link. They are reportable by channel.
+  etc.). So the 35 shipped anonymous seeds carry full source/medium/campaign even though they
+  have no identity and no job link. They are reportable by channel.
 - **Non-WC origination carries channel-level attribution only.** 8x8-only and `jobs@`-only spine
   rows have no WC record, so no campaign granularity — they are `direct_did` / `web_did` /
   `jobs_email` via the existing `attribution_source` / `direct_subtype` tags. This is the
@@ -211,36 +243,42 @@ When a WC form-lead and a parsed `jobs@` form-email are the same submission, the
 contributes the *interaction* (form body, problem text) but contributes **nothing** to
 attribution when WC is present.
 
-## 9. Downstream impact (expected, not a regression)
+## 9. Downstream impact (shipped result)
 
-- **The lead base grows.** Seeded WC-only opportunities are new opportunities, so every
-  volume/funnel metric sees more leads. This is **correct and intended** — the Addendum already
-  flagged that WC-only conversion rates are overstated until recomputed on the full lead base.
-  Funnel denominators will move; recompute rates after the change.
+- **The lead base grew by +50 net opps** (38,347 → 38,397). Inbound funnel denominator:
+  10,001 → 10,052 (+51). Booking rate: 26.2% → 26.0% (−0.2pp overstatement correction).
+  This is the expected directional shift — more leads in the denominator, conversions barely
+  moved (+1 booked).
 - **The counting invariant protects against double-counting touches.** Counting is by
-  `opportunity_id` (CLAUDE.md §7), so multiple WC touches on one opp stay one lead. The new risk
-  is duplicate *opportunities* from bad seeding (§4), which the dedup mitigations address — not
-  duplicate touches.
+  `opportunity_id` (CLAUDE.md §7), so multiple WC touches on one opp stay one lead. Zero
+  double-seed collisions were found in validation.
 - **`vw_lead_enriched`** currently reads the scalar `wc_lead_id` off the opportunity; it will
-  now also surface WC-only-originated opportunities. Confirm it carries the
-  `origination_source` / `identity` tags through.
+  now also surface WC-only-originated opportunities. The `origination_source` / `identity`
+  columns need surfacing through `vw_lead_enriched` to the UI (small follow-up, deferred).
 
-## 10. Validation plan (before/after — do not trust blind)
+## 10. Validation plan — RESULTS (2026-06-10)
 
-1. **The no-8x8 / anonymous class now appears.** The ~9–10 NULL_PHONE + NO_8x8_CALL leads from
-   the 23 HAS_JOB now exist in the spine as opportunities (phone-bearing ones linkable to their
-   jobs; anonymous ones present but unlinked, per §5).
-2. **No double-seeding.** Every seeded row must have failed an identity match against ALL spine
-   events in its cluster window. Report any opportunity whose phone/email also appears on
-   another opportunity in the same window — that's a dedup miss.
-3. **Exclusions hold.** Zero spam and zero non-Unique WC leads among the seeds.
-4. **Volume increase is bounded and explained.** Report the count of seeded opportunities split
-   by `origination_source`/`identity`, and confirm the total lead increase equals (eligible
-   WC-only leads − cross-stream dedup collapses). No surprise inflation.
-5. **Re-run the CSV bucket comparison.** AGREE_LINKED should rise for the phone-bearing seeds;
-   no bucket should regress.
-6. **Spine clustering invariant still holds** — no opportunity spans a >30-day consecutive
-   internal gap after seeding.
+All validations passed. Snapshot: `ds_crm.opportunities_pre_thirdstream_20260610` (38,347 rows).
+
+1. **The no-8x8 / anonymous class now appears.** ✓ Lead 238745838 (Randwick caller / JN 142760)
+   exists as a flagged anonymous opp (`google/cpc`), unlinked to job. Job 142760 exists
+   separately as J-142760 via its own customer phone.
+2. **No double-seeding.** ✓ Zero collisions — no seeded opp's phone appears on another opp
+   within the same 30-day window.
+3. **Exclusions hold.** ✓ Zero spam, zero non-Unique among seeds.
+4. **Volume increase is bounded and explained.** ✓ 51 seeds (35 anonymous + 16 identified).
+   +50 net (1 merge from clustering). Lower than Phase 3's 131 estimate because WC Web Forms
+   were already in the spine (§2a).
+5. **CSV bucket comparison.** ✓ NEITHER −11, OPP_ONLY +11, AGREE_LINKED stable (291). No
+   bucket regressed.
+6. **Clustering invariant.** ✓ 3 opps with >30-day internal gaps — all **pre-existing** (in
+   snapshot), not introduced by the third stream.
+7. **WC primacy.** ✓ Zero WC-present opps with non-WC attribution. Zero Frankenstein rows
+   (attribution-as-a-unit guard passes).
+8. **Quinn = paid.** ✓ All Quinn forms carry `google/cpc`. Zero Quinn forms labeled organic
+   or direct.
+9. **Direct pool clean.** ✓ Only `direct_booking` (28,345) + `direct_did` (9,014). Zero
+   blind-parser or form defaults.
 
 ## 11. Open decision for sign-off
 
@@ -265,7 +303,7 @@ visible from how reports read):
 
 **Note:** applying channel-priority will RE-CATEGORIZE existing enriched opps (an organic-primary
 opp with a cpc touch becomes PPC), so the "leads by source" distribution shifts more than the
-+131 new opps alone — capture before/after on the source *distribution*, not just counts, when
++51 new opps alone — capture before/after on the source *distribution*, not just counts, when
 this lands.
 
 Everything else in this amendment is mechanical once that's set. On sign-off, the build
