@@ -79,7 +79,7 @@ WITH raw_jobs AS (
     AND LOWER(tc.client_name) NOT LIKE '%test%'
 )
 SELECT *,
-  -- Free-text extraction: ONLY when all structured levels are null
+  -- Free-text extraction: ONLY when all structured levels are null (legacy, for desc_phone)
   CASE WHEN COALESCE(id_phone, '') = '' AND COALESCE(norm_client_phone, '') = ''
         AND contact_mobile IS NULL AND site_phone IS NULL
     THEN extract_au_phone(desc_text) ELSE NULL END AS desc_phone,
@@ -89,8 +89,65 @@ SELECT *,
   norm_au_phone(REGEXP_EXTRACT(
     strip_html(desc_text),
     r'Caller\s+ID\s*:\s*(\+?\d[\d\s\-\.]{7,15})'
-  )) AS callerid_phone
+  )) AS callerid_phone,
+  -- T3: UN-GATED description phone extraction (always runs, even when structured phones exist).
+  -- Uses LABELED patterns only (Phone:, m), Caller ID:, Contact...(M)) — same regex as
+  -- extract_au_phone(). Bare mobile patterns are too noisy for auto-linking (secondary contacts
+  -- create false merges — validated: 27 false-positive merges with bare regex, zero with labeled).
+  extract_au_phone(desc_text) AS t3_desc_phone
 FROM raw_jobs;
+
+-- ====== T3: Task-notes and labour-notes phone extraction ======
+-- Extract customer phones from notes text. One extracted phone per job (first match).
+-- These are additional match keys fed into the clustering graph.
+CREATE TEMP TABLE t3_notes_phones AS
+WITH task_note_phones AS (
+  SELECT jobnumber,
+    norm_au_phone(REGEXP_EXTRACT(
+      REGEXP_REPLACE(REGEXP_REPLACE(note_clean, r'<[^>]+>', ' '), r'&[a-zA-Z]+;|&#\d+;', ' '),
+      r'(?:Phone|Caller ID|Contact[^)]*\(M(?:ob)?\)|(?:^|[\s>])m\))\s*[:\s]*(\+?6?1?\s*0?[2-8][\d\s\-\.]{7,12})'
+    )) AS extracted_phone
+  FROM `pttr-taskdata.ds_aroflo.task_notes_deduped`
+  WHERE note_clean IS NOT NULL
+),
+labour_note_phones AS (
+  SELECT task_jobnumber AS jobnumber,
+    norm_au_phone(REGEXP_EXTRACT(
+      note,
+      r'(?:Phone|Contact|m\)|M\))\s*[:\s]*(\+?6?1?\s*0?[2-8][\d\s\-\.]{7,12})'
+    )) AS extracted_phone
+  FROM `pttr-taskdata.ds_aroflo.tasklabours_raw`
+  WHERE note IS NOT NULL AND (deleted IS NULL OR deleted = 'false')
+),
+all_note_phones AS (
+  SELECT DISTINCT jobnumber, extracted_phone
+  FROM (
+    SELECT * FROM task_note_phones WHERE extracted_phone IS NOT NULL
+    UNION ALL
+    SELECT * FROM labour_note_phones WHERE extracted_phone IS NOT NULL
+  )
+)
+-- Non-customer exclusion: filter out staff/internal phones
+SELECT anp.jobnumber, anp.extracted_phone
+FROM all_note_phones anp
+WHERE anp.extracted_phone NOT IN (
+  -- Staff phones (≥10 outbound, 0 jobs)
+  SELECT phone FROM (
+    SELECT rc.norm_callee_phone AS phone, COUNT(*) AS cnt
+    FROM `pttr-taskdata.ds_crm.raw_calls` rc
+    WHERE rc.direction = 'Outgoing' AND rc.norm_callee_phone IS NOT NULL AND rc.norm_callee_phone != ''
+    GROUP BY 1 HAVING COUNT(*) >= 10
+  )
+  WHERE phone NOT IN (
+    SELECT DISTINCT phone FROM (
+      SELECT norm_client_mobile AS phone FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE norm_client_mobile IS NOT NULL AND norm_client_mobile != ''
+      UNION DISTINCT
+      SELECT id_phone FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE id_phone IS NOT NULL AND id_phone != ''
+    )
+  )
+)
+-- Exclude known CSR/office extensions (8583-xxxx range)
+AND NOT REGEXP_CONTAINS(anp.extracted_phone, r'\+618583');
 
 -- ====== STEP 1a: WC-only event nodes (third-stream) ======
 -- Eligible WC leads NOT already represented in the spine via ±5s match.
@@ -168,6 +225,43 @@ SELECT 'J', event_id, event_ts, callerid_phone, 'phone' FROM job_events
     AND callerid_phone != COALESCE(contact_mobile, '')
     AND callerid_phone != COALESCE(site_phone, '')
     AND callerid_phone != COALESCE(desc_phone, '')
+UNION ALL
+-- T3: UN-GATED description phone (captures alternate customer phones even when structured exist)
+SELECT 'J', event_id, event_ts, t3_desc_phone, 'phone' FROM job_events
+  WHERE t3_desc_phone IS NOT NULL
+    -- Dedup: only add if different from ALL structured phones
+    AND t3_desc_phone != COALESCE(id_phone, '')
+    AND t3_desc_phone != COALESCE(norm_client_phone, '')
+    AND t3_desc_phone != COALESCE(contact_mobile, '')
+    AND t3_desc_phone != COALESCE(site_phone, '')
+    AND t3_desc_phone != COALESCE(desc_phone, '')
+    AND t3_desc_phone != COALESCE(callerid_phone, '')
+    -- Non-customer exclusion: not a staff/internal phone
+    AND t3_desc_phone NOT IN (
+      SELECT phone FROM (
+        SELECT rc.norm_callee_phone AS phone, COUNT(*) AS cnt
+        FROM `pttr-taskdata.ds_crm.raw_calls` rc
+        WHERE rc.direction = 'Outgoing' AND rc.norm_callee_phone IS NOT NULL GROUP BY 1 HAVING COUNT(*) >= 10
+      ) WHERE phone NOT IN (
+        SELECT DISTINCT p FROM (
+          SELECT norm_client_mobile AS p FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE norm_client_mobile IS NOT NULL AND norm_client_mobile != ''
+          UNION DISTINCT SELECT id_phone FROM `pttr-taskdata.ds_aroflo.tasks_complete` WHERE id_phone IS NOT NULL AND id_phone != ''
+        )
+      )
+    )
+    AND NOT REGEXP_CONTAINS(t3_desc_phone, r'\+618583')
+UNION ALL
+-- T3: Task/labour notes extracted phones
+SELECT 'J', j.event_id, j.event_ts, np.extracted_phone, 'phone'
+FROM t3_notes_phones np
+JOIN job_events j ON np.jobnumber = j.event_id
+WHERE np.extracted_phone != COALESCE(j.id_phone, '')
+  AND np.extracted_phone != COALESCE(j.norm_client_phone, '')
+  AND np.extracted_phone != COALESCE(j.contact_mobile, '')
+  AND np.extracted_phone != COALESCE(j.site_phone, '')
+  AND np.extracted_phone != COALESCE(j.desc_phone, '')
+  AND np.extracted_phone != COALESCE(j.callerid_phone, '')
+  AND np.extracted_phone != COALESCE(j.t3_desc_phone, '')
 UNION ALL
 -- WC-only events (third-stream nodes)
 SELECT 'W', event_id, event_ts, phone, 'phone' FROM wc_events WHERE phone IS NOT NULL
