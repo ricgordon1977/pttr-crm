@@ -26,9 +26,10 @@ that the CRM's phone/email clustering didn't link. Root causes:
 | **1-digit phone typo** | 1 | $310 | 84867 vs 54867 |
 | **30-day timing gap** | 1 | $977 | Same phone, different cluster window |
 
-The form-twin join (shipped) resolved 17 of 26 ($21,251) deterministically. This spec
-addresses the full cascade including the remaining 9 and future leads matching the same
-patterns.
+The form-twin join (shipped, commit aa7348b) resolved **17 of 26** leads for **$21,251**
+deterministically. The residual is **9 leads / ~$8,272**, classified as: 3 phone-mismatch
+calls, 2 no-twin forms, 3 null-phone AroFlo jobs, 1 timing gap. This spec addresses the
+full cascade including that residual and future leads matching the same patterns.
 
 ### AI content crawl findings (Pass A, Pass C)
 
@@ -89,6 +90,14 @@ in the structured phone field. T3 would catch these.
 `extract_email()` temp functions for description-level extraction on the job side. The lead
 side needs the same extraction applied to WC transcripts/form bodies.
 
+**Non-customer exclusion guard:** extracted phones are filtered against the existing
+non-customer exclusion lists (staff/test phones via the outbound-staff filter in
+`vw_leads_unified`, known test numbers, supplier/CSR extensions) BEFORE being added as match
+keys. An extracted number that belongs to staff/supplier/CSR is discarded, not matched — this
+prevents auto-linking a job to a lead because the plumber's or office's number appeared in
+both. The exclusion reuses the same `internal_phones` and `account_only_phones` CTEs already
+in `vw_leads_unified` / `build_opportunities.sql`.
+
 **Implementation note:** extraction runs at spine/build time (not read time). Extracted keys
 are added to the `contact_points` table alongside structured keys, so the existing clustering
 algorithm handles them. No new matching logic needed — just more keys fed into the same graph.
@@ -102,8 +111,8 @@ Catches transposition and single-digit typos.
 within edit-distance-1, do NOT auto-link.
 
 **Value corroboration:** if the lead has a WC `sale_value` and the candidate job has an
-`invoiced_total_ex`, they must be within 50% of each other. This guards against coincidental
-near-phone matches on unrelated jobs.
+`invoiced_total_ex`, they must match within ±$5 (same tight tolerance as T6). A single-digit
+phone typo auto-link must be strongly value-corroborated, not loosely.
 
 **Evidence:** lead 210256081 (Valeria Kelly) had WC phone +61288584867 vs AroFlo
 +61288554867 — a single-digit difference in position 7 (8→5). T4 would catch this.
@@ -160,9 +169,11 @@ has no phone on record.
 common first names in populous suburbs produce false positives. The corroboration gate
 prevents this.
 
-**Common-first-name flag:** names appearing ≥20 times in `tasks_complete.client_name` (e.g.,
-John, David, Michael, Peter, Mark, Chris, Andrew, Paul, Steve, Matt) require FULL surname
-match as the corroborator — value and address alone are insufficient.
+**Common-first-name flag:** computed at build time as first names appearing ≥20 times in
+`tasks_complete.client_name` (e.g., John, David, Michael, Peter, Mark, Chris, Andrew, Paul,
+Steve, Matt — illustrative, not the operative list). Common-name leads require FULL surname
+match as the corroborator — value and address alone are insufficient. The threshold (≥20) is
+tunable; the list is derived from the data, not hardcoded.
 
 **Evidence:** leads 214123961 (Janet Howse) and 215756822 (Chris Kelsey) — both are WPForms
 with no twin and no phone. Name + suburb + exact value match confirmed the correct AroFlo
@@ -206,7 +217,14 @@ produced the link.
 
 ### confidence
 
-**Derived from tier + corroborators.** NOT an LLM self-score. Reproducible and tunable.
+**A priority/sort score, NOT a gate.** Derived from tier + corroborators. NOT an LLM
+self-score. Reproducible and tunable. Capped at 100 for display.
+
+**Auto-link vs propose is decided SOLELY by tier** (T1–T4 auto, T5–T7 propose). Confidence
+never gates auto-link — a corroborator penalty can never demote an auto-tier (T1–T4) into a
+proposal. Tier is authoritative for the auto/propose decision. Confidence is used ONLY for:
+- Ranking proposals in the review queue (higher = review first).
+- Display in the UI alongside match_tier.
 
 **Scoring model:**
 
@@ -220,22 +238,16 @@ produced the link.
 | T6 | 50 | Fuzzy (name+suburb, corroboration-gated) |
 | T7 | 40 | AI-assessed (content reasoning, evidence-cited) |
 
-**Corroborator adjustments (additive):**
+**Corroborator adjustments (additive, clamped to [0, 100]):**
 
 | Corroborator | Adjustment |
 |---|---|
-| Exact value match (±$5) | +15 |
-| Full surname match | +10 |
-| Exact street address match | +10 |
-| Email match (either side) | +10 |
+| Exact value match (±$5) | +5 |
+| Full surname match | +5 |
+| Exact street address match | +5 |
+| Email match (either side) | +5 |
 | Common first name (≥20 in AroFlo) | −10 |
-| Multiple candidate jobs | −20 (and blocks auto-link) |
-
-**Confidence thresholds:**
-- ≥80: auto-link eligible (T1–T4)
-- 60–79: proposal (T5–T7 with strong corroboration)
-- 40–59: proposal (review recommended)
-- <40: not proposed (insufficient evidence)
+| Multiple candidate jobs | −20 (and blocks auto-link at T1–T4) |
 
 ### match_reason
 
@@ -248,7 +260,7 @@ Structured JSON:
   "lead_phone": "+61419784599",
   "job_phone_source": "task_description: 'Craig 0419 784 599'",
   "corroborators": ["exact_value: $4255"],
-  "confidence": 105,
+  "confidence": 95,
   "evidence_text": "Job description contains 'Craig 0419 784 599' matching WC caller phone"
 }
 ```
