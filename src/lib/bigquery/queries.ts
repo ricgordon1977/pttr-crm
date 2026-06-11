@@ -406,6 +406,30 @@ export async function getJobLabour(jobId: string) {
 
 export async function getJobInteractions(jobId: string) {
   return query(`
+    WITH
+    -- Path 1: job linked via opportunities.all_jobnumbers (COD jobs in the build)
+    opp_by_jobnumber AS (
+      SELECT opp.wc_lead_id, opp.phone AS opp_phone
+      FROM \`${DS}.opportunities\` opp
+      WHERE REGEXP_CONTAINS(CONCAT(',', REPLACE(COALESCE(opp.all_jobnumbers, ''), ' ', ''), ','), CONCAT(',', @jobId, ','))
+    ),
+    -- Path 2: job's client phone matches an opportunity's phone (catches Account jobs,
+    -- manually-linked jobs, and any job not yet in the build)
+    opp_by_phone AS (
+      SELECT opp.wc_lead_id, opp.phone AS opp_phone
+      FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
+      JOIN \`${DS}.opportunities\` opp
+        ON opp.phone IS NOT NULL AND opp.phone != ''
+        AND (opp.phone = tc.id_phone OR opp.phone = tc.norm_client_phone)
+      WHERE tc.jobnumber = @jobId
+        AND NOT EXISTS (SELECT 1 FROM opp_by_jobnumber)
+    ),
+    -- Combine: prefer path 1 (explicit link), fall back to path 2 (phone match)
+    matched_leads AS (
+      SELECT DISTINCT wc_lead_id FROM opp_by_jobnumber
+      UNION DISTINCT
+      SELECT DISTINCT wc_lead_id FROM opp_by_phone
+    )
     SELECT
       COALESCE(li.call_id, CAST(li.contact_datetime AS STRING)) AS interaction_id,
       li.lead_id,
@@ -432,8 +456,8 @@ export async function getJobInteractions(jobId: string) {
         WHEN li.contact_type = 'Phone' THEN LEFT(COALESCE(li.contact_content, ''), 120)
         ELSE LEFT(COALESCE(li.contact_subject, li.contact_content, ''), 120)
       END AS summary
-    FROM \`${DS}.opportunities\` opp
-    JOIN \`${DS}.lead_interactions\` li ON li.lead_id = opp.wc_lead_id
+    FROM matched_leads ml
+    JOIN \`${DS}.lead_interactions\` li ON li.lead_id = ml.wc_lead_id
     LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id AND li.contact_type = 'Phone'
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
@@ -451,7 +475,6 @@ export async function getJobInteractions(jobId: string) {
       WHERE operator_name IS NOT NULL AND operator_name != ''
       GROUP BY call_id
     ) ro ON li.call_id = ro.call_id AND li.contact_type = 'Phone'
-    WHERE REGEXP_CONTAINS(CONCAT(',', REPLACE(COALESCE(opp.all_jobnumbers, ''), ' ', ''), ','), CONCAT(',', @jobId, ','))
     ORDER BY li.contact_datetime_sydney DESC
   `, { jobId })
 }
