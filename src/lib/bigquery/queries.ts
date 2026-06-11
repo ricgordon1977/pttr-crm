@@ -405,31 +405,8 @@ export async function getJobLabour(jobId: string) {
 }
 
 export async function getJobInteractions(jobId: string) {
+  // Path 1: job linked via opportunities.all_jobnumbers (COD jobs in the build)
   return query(`
-    WITH
-    -- Path 1: job linked via opportunities.all_jobnumbers (COD jobs in the build)
-    opp_by_jobnumber AS (
-      SELECT opp.wc_lead_id, opp.phone AS opp_phone
-      FROM \`${DS}.opportunities\` opp
-      WHERE REGEXP_CONTAINS(CONCAT(',', REPLACE(COALESCE(opp.all_jobnumbers, ''), ' ', ''), ','), CONCAT(',', @jobId, ','))
-    ),
-    -- Path 2: job's client phone matches an opportunity's phone (catches Account jobs,
-    -- manually-linked jobs, and any job not yet in the build)
-    opp_by_phone AS (
-      SELECT opp.wc_lead_id, opp.phone AS opp_phone
-      FROM \`pttr-taskdata.ds_aroflo.tasks_complete\` tc
-      JOIN \`${DS}.opportunities\` opp
-        ON opp.phone IS NOT NULL AND opp.phone != ''
-        AND (opp.phone = tc.id_phone OR opp.phone = tc.norm_client_phone)
-      WHERE tc.jobnumber = @jobId
-        AND NOT EXISTS (SELECT 1 FROM opp_by_jobnumber)
-    ),
-    -- Combine: prefer path 1 (explicit link), fall back to path 2 (phone match)
-    matched_leads AS (
-      SELECT DISTINCT wc_lead_id FROM opp_by_jobnumber
-      UNION DISTINCT
-      SELECT DISTINCT wc_lead_id FROM opp_by_phone
-    )
     SELECT
       COALESCE(li.call_id, CAST(li.contact_datetime AS STRING)) AS interaction_id,
       li.lead_id,
@@ -456,8 +433,8 @@ export async function getJobInteractions(jobId: string) {
         WHEN li.contact_type = 'Phone' THEN LEFT(COALESCE(li.contact_content, ''), 120)
         ELSE LEFT(COALESCE(li.contact_subject, li.contact_content, ''), 120)
       END AS summary
-    FROM matched_leads ml
-    JOIN \`${DS}.lead_interactions\` li ON li.lead_id = ml.wc_lead_id
+    FROM \`${DS}.opportunities\` opp
+    JOIN \`${DS}.lead_interactions\` li ON li.lead_id = opp.wc_lead_id
     LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id AND li.contact_type = 'Phone'
     LEFT JOIN (
       SELECT parent_call_id, callee_name,
@@ -475,8 +452,65 @@ export async function getJobInteractions(jobId: string) {
       WHERE operator_name IS NOT NULL AND operator_name != ''
       GROUP BY call_id
     ) ro ON li.call_id = ro.call_id AND li.contact_type = 'Phone'
+    WHERE REGEXP_CONTAINS(CONCAT(',', REPLACE(COALESCE(opp.all_jobnumbers, ''), ' ', ''), ','), CONCAT(',', @jobId, ','))
     ORDER BY li.contact_datetime_sydney DESC
   `, { jobId })
+}
+
+// Path 2: interactions via Firestore manual link (Account/manually-linked jobs).
+// Called from the job-detail route when Path 1 (all_jobnumbers) found nothing
+// and Firestore has a crm_lead_overrides doc with manual_job_number = jobId.
+// The oppId is the Firestore doc ID (the opportunity that carries the WC lead).
+export async function getJobInteractionsByOppId(oppId: string) {
+  return query(`
+    SELECT
+      COALESCE(li.call_id, CAST(li.contact_datetime AS STRING)) AS interaction_id,
+      li.lead_id,
+      CASE
+        WHEN li.contact_type = 'Phone' THEN 'call'
+        ELSE 'email'
+      END AS type,
+      li.direction,
+      li.contact_datetime_sydney AS datetime,
+      COALESCE(
+        agent.callee_name,
+        CASE WHEN li.operator_name NOT LIKE '%->%' THEN li.operator_name END,
+        ro.operators
+      ) AS operator,
+      CASE
+        WHEN li.contact_type = 'Phone' AND rc.talk_time IS NOT NULL
+          AND REGEXP_CONTAINS(rc.talk_time, r'^\\d{2}:\\d{2}:\\d{2}$')
+        THEN CAST(SPLIT(rc.talk_time, ':')[OFFSET(0)] AS INT64) * 3600
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(1)] AS INT64) * 60
+           + CAST(SPLIT(rc.talk_time, ':')[OFFSET(2)] AS INT64)
+        ELSE NULL
+      END AS duration,
+      CASE
+        WHEN li.contact_type = 'Phone' THEN LEFT(COALESCE(li.contact_content, ''), 120)
+        ELSE LEFT(COALESCE(li.contact_subject, li.contact_content, ''), 120)
+      END AS summary
+    FROM \`${DS}.opportunities\` opp
+    JOIN \`${DS}.lead_interactions\` li ON li.lead_id = opp.wc_lead_id
+    LEFT JOIN \`${DS}.raw_calls\` rc ON li.call_id = rc.call_id AND li.contact_type = 'Phone'
+    LEFT JOIN (
+      SELECT parent_call_id, callee_name,
+             ROW_NUMBER() OVER (PARTITION BY parent_call_id ORDER BY TIMESTAMP_DIFF(disconnected_time, start_time, SECOND) DESC, start_time DESC) AS rn
+      FROM \`${DS}.raw_call_legs\`
+      WHERE answered = 'Answered' AND direction = 'Internal'
+        AND parent_call_id IS NOT NULL
+        AND callee NOT LIKE 'CallForking%' AND callee NOT LIKE 'RingGroup%' AND callee NOT LIKE 'AutoAttendant%'
+        AND REGEXP_CONTAINS(callee_name, r'^[A-Z][a-z]+ [A-Z][a-z]+$')
+        AND callee_name NOT IN ('Mr Washer Generic', 'Mr Washer Temp', 'Plumber Rescue')
+    ) agent ON rc.call_id = agent.parent_call_id AND agent.rn = 1
+    LEFT JOIN (
+      SELECT call_id, STRING_AGG(DISTINCT operator_name, ', ' ORDER BY operator_name) AS operators
+      FROM \`${DS}.raw_recordings\`
+      WHERE operator_name IS NOT NULL AND operator_name != ''
+      GROUP BY call_id
+    ) ro ON li.call_id = ro.call_id AND li.contact_type = 'Phone'
+    WHERE opp.opportunity_id = @oppId
+    ORDER BY li.contact_datetime_sydney DESC
+  `, { oppId })
 }
 
 export async function getJobCallDetail(callId: string) {
