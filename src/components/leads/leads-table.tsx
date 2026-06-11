@@ -178,7 +178,10 @@ export const LeadsTable = memo(function LeadsTable({ leads, onViewLead, needsRev
         l.contact_name?.toLowerCase().includes(term) ||
         l.phone_norm?.includes(term) ||
         l.suburb?.toLowerCase().includes(term) ||
-        l.lead_source?.toLowerCase().includes(term)
+        l.lead_source?.toLowerCase().includes(term) ||
+        l.lead_id?.toLowerCase().includes(term) ||
+        String(l.wc_lead_id || '').includes(term) ||
+        l.all_jobnumbers?.includes(term)
       )
     }
     return result
