@@ -102,6 +102,27 @@ in `vw_leads_unified` / `build_opportunities.sql`.
 are added to the `contact_points` table alongside structured keys, so the existing clustering
 algorithm handles them. No new matching logic needed — just more keys fed into the same graph.
 
+##### Bare-mobile extraction — deferred to propose tiers (validated)
+
+T3 as shipped (commit bfd52fa) uses **labeled phone patterns only** — patterns with an
+explicit prefix like `"m) 0412..."`, `"Phone: 0412..."`, `"Caller ID: 0412..."`. Result:
+**0 false-positive merges, 33 legitimate same-customer merges** from un-gated extraction
+on job descriptions that also have structured phones.
+
+**Bare-mobile patterns** (unlabeled, e.g., `"Joseph Pawney - 0412 213 986"`) were tested
+and **rolled back** in the same commit cycle. Results:
+
+- 146 total merges, +1 gap lead resolved (Joseph Pawney / job 141142).
+- **27 false-positive mixed-client merges** — different customers' opps merged because a
+  shared/secondary phone (tenant, landlord, building manager) appeared in both descriptions.
+- 89.4% structural-phone match rate; the 10.6% noise is secondary-contact numbers that
+  cross-contaminate when used as auto-link keys.
+
+**Decision:** bare-mobile extraction is **too noisy for auto-link**. The false-positive rate
+(27 bad merges on 146 total = 18.5%) is unacceptable for a deterministic tier. Deferred to
+**propose tiers (T5/T6/T7)** where a human confirms before any link is written. A bare-mobile-
+extracted phone is a valid SIGNAL for a proposal, never a valid key for an auto-link.
+
 #### T4. Fuzzy phone (edit-distance-1)
 
 Matches phones that differ by exactly one digit, same length, same prefix structure.
@@ -132,6 +153,12 @@ a tier goes BELOW the line, not above.
 ---
 
 ### PROPOSE tiers (inference — write a PROPOSAL, not a link)
+
+**Bare-mobile-extracted phones are a valid signal here.** Phones extracted from free text
+without a label prefix (e.g., `"Name - 0412..."`) are too noisy for T3 auto-link (see §3 T3
+bare-mobile subsection) but ARE useful as propose-tier evidence — a human reviews the match
+before it's written, which catches the secondary-contact false positives that make bare
+extraction unsafe for auto-linking.
 
 #### T5. Phone-mismatch / different-number calls
 
